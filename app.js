@@ -251,15 +251,39 @@ ${chineseText}
 function selectIntelligentVoice(text) {
   // Analysis keywords for story categorization
   const analysis = {
-    isChildrenStory: /小朋友|细路|细路仔|小孩|小孩仔|童|玩耍|玩木块|嘻嘻哈哈|开心|呀|咧|咯/.test(text),
-    isWarmEmotional: /温暖|温馨|幸福|快乐|开心|爱|拥抱|微笑|亲人|家人|妈妈|爸爸|婆婆|公公/.test(text),
-    isEducational: /学习|學習|读书|睇書|课堂|課堂|学校|學校|知识|知識|教|学|學/.test(text),
-    isDailyLife: /日常生活|生活|街市|茶餐厅|茶记|饮茶|吃饭|食飯|落雨|收衫|上班|放工/.test(text),
-    isCalmNarrative: /静静|靜靜|慢慢|漸漸|轻轻|輕輕|缓缓|緩緩|平静|平靜|安靜/.test(text),
-    isEnergetic: /嘻嘻哈哈|哈哈|嘻嘻|热烈|熱烈|热闹|熱鬧|欢快|歡快|跳跃|跳躍|跑|冲|衝/.test(text),
-    hasMaleProtagonist: /小明|阿明|哥哥|阿哥|爸爸|公公|先生|男|佢哋|他們/.test(text),
-    hasFemaleProtagonist: /小美|阿美|姐姐|家姐|妹妹|細妹|妈妈|婆婆|女|佢哋|她們/.test(text),
+    // Refined children's story detection - removed generic "开心", added more specific child terms
+    isChildrenStory: /小朋友|细路|细路仔|小孩|小孩仔|儿童|兒童|玩耍|玩木块|嘻嘻哈哈|童真|呀|咧|咯|搭积木|搭高塔/.test(text),
+
+    // Adult/adolence indicators - if these are present, it's NOT a children's story
+    hasAdultIndicators: /市民|锻炼|健身|运动|工作|上班|公司|职员|成人|成年人|青年|老人/.test(text),
+
+    // Warm emotional stories
+    isWarmEmotional: /温暖|温馨|幸福|拥抱|亲人|家人|婆婆|公公|家人团聚|亲情|感动|温馨/.test(text),
+
+    // Educational content
+    isEducational: /学习|學習|读书|睇書|课堂|課堂|学校|學校|知识|知識|教学|教材|学习班|补习/.test(text),
+
+    // Daily life scenes (Hong Kong style)
+    isDailyLife: /日常生活|生活|街市|茶餐厅|茶记|饮茶|吃饭|食飯|落雨|收衫|上班|放工|买菜|煮饭/.test(text),
+
+    // Fitness/Sports scenes (NEW)
+    isFitnessSports: /健身|锻炼|运动|跑步|打球|游泳|瑜伽|做运动|体能|训练|操场|体育馆|器材/.test(text),
+
+    // Calm narrative
+    isCalmNarrative: /静静|靜靜|慢慢|漸漸|轻轻|輕輕|缓缓|緩緩|平静|平靜|安靜|悠闲|悠閒|放松|放鬆/.test(text),
+
+    // Energetic/active content - expanded keywords
+    isEnergetic: /嘻嘻哈哈|哈哈|嘻嘻|热烈|熱烈|热闹|熱鬧|欢快|歡快|跳跃|跳躍|跑|冲|衝|活力|运动|健身|锻炼|充满活力|精神|元气/.test(text),
+
+    // Protagonist gender detection
+    hasMaleProtagonist: /小明|阿明|哥哥|阿哥|爸爸|公公|先生|男人|男子|男生|佢哋|他們/.test(text),
+    hasFemaleProtagonist: /小美|阿美|姐姐|家姐|妹妹|細妹|妈妈|婆婆|女人|女子|女生|女仔|佢哋|她們/.test(text),
   };
+
+  // Override: If adult indicators are present, force isChildrenStory to false
+  if (analysis.hasAdultIndicators) {
+    analysis.isChildrenStory = false;
+  }
 
   console.log('Story content analysis:', analysis);
 
@@ -279,7 +303,17 @@ function selectIntelligentVoice(text) {
       console.log('Selected: yuanqishaonv (default children\'s story voice)');
     }
   }
-  // Priority 2: Warm emotional stories
+  // Priority 2: Fitness/Sports scenes (NEW)
+  else if (analysis.isFitnessSports) {
+    if (analysis.hasFemaleProtagonist) {
+      selectedVoice = 'jilingshaonv'; // Energetic female for fitness
+      console.log('Selected: jilingshaonv (fitness story with female characters)');
+    } else {
+      selectedVoice = 'zhengpaiqingnian'; // Energetic young male for fitness
+      console.log('Selected: zhengpaiqingnian (fitness story with male/neutral characters)');
+    }
+  }
+  // Priority 3: Warm emotional stories
   else if (analysis.isWarmEmotional) {
     if (analysis.hasFemaleProtagonist) {
       selectedVoice = 'qinqienvsheng'; // Intimate and gentle female
@@ -289,7 +323,7 @@ function selectIntelligentVoice(text) {
       console.log('Selected: yuanqinansheng (warm emotional story with male protagonist)');
     }
   }
-  // Priority 3: Educational content
+  // Priority 4: Educational content
   else if (analysis.isEducational) {
     if (analysis.hasFemaleProtagonist) {
       selectedVoice = 'wenjingxuejie'; // Scholarly female student
@@ -299,17 +333,17 @@ function selectIntelligentVoice(text) {
       console.log('Selected: boyinnansheng (educational content with male voice)');
     }
   }
-  // Priority 4: Daily life stories
+  // Priority 5: Daily life stories
   else if (analysis.isDailyLife) {
     selectedVoice = 'shuangkuaijiejie'; // Cheerful sisterly for daily life
     console.log('Selected: shuangkuaijiejie (daily life story)');
   }
-  // Priority 5: Energetic/active content
+  // Priority 6: Energetic/active content
   else if (analysis.isEnergetic) {
     selectedVoice = 'jilingshaonv'; // Smart and lively
     console.log('Selected: jilingshaonv (energetic story)');
   }
-  // Priority 6: Calm narrative
+  // Priority 7: Calm narrative
   else if (analysis.isCalmNarrative) {
     selectedVoice = 'wenrounvsheng'; // Soft and warm
     console.log('Selected: wenrounvsheng (calm narrative)');
