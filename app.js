@@ -236,19 +236,121 @@ ${chineseText}
 // ============== STEPFUN TTS API (Text to Cantonese Speech) ==============
 
 /**
+ * Intelligent voice selection based on story content analysis
+ * Analyzes the story type, characters, and mood to recommend appropriate voice
+ * @param {string} text - Story text to analyze
+ * @returns {string} - Recommended voice ID
+ *
+ * Available voices from step-tts-mini:
+ * Male: cixingnansheng, zhengpaiqingnian, yuanqinansheng, qingniandaxuesheng,
+ *       boyinnansheng, ruyananshi, shenchennanyin
+ * Female: qinqienvsheng, wenrounvsheng, jilingshaonv, yuanqishaonv,
+ *         ruanmengnvsheng, youyanvsheng, lengyanyujie, shuangkuaijiejie,
+ *         wenjingxuejie, linjiajiejie, linjiameimei, zhixingjiejie
+ */
+function selectIntelligentVoice(text) {
+  // Analysis keywords for story categorization
+  const analysis = {
+    isChildrenStory: /小朋友|细路|细路仔|小孩|小孩仔|童|玩耍|玩木块|嘻嘻哈哈|开心|呀|咧|咯/.test(text),
+    isWarmEmotional: /温暖|温馨|幸福|快乐|开心|爱|拥抱|微笑|亲人|家人|妈妈|爸爸|婆婆|公公/.test(text),
+    isEducational: /学习|學習|读书|睇書|课堂|課堂|学校|學校|知识|知識|教|学|學/.test(text),
+    isDailyLife: /日常生活|生活|街市|茶餐厅|茶记|饮茶|吃饭|食飯|落雨|收衫|上班|放工/.test(text),
+    isCalmNarrative: /静静|靜靜|慢慢|漸漸|轻轻|輕輕|缓缓|緩緩|平静|平靜|安靜/.test(text),
+    isEnergetic: /嘻嘻哈哈|哈哈|嘻嘻|热烈|熱烈|热闹|熱鬧|欢快|歡快|跳跃|跳躍|跑|冲|衝/.test(text),
+    hasMaleProtagonist: /小明|阿明|哥哥|阿哥|爸爸|公公|先生|男|佢哋|他們/.test(text),
+    hasFemaleProtagonist: /小美|阿美|姐姐|家姐|妹妹|細妹|妈妈|婆婆|女|佢哋|她們/.test(text),
+  };
+
+  console.log('Story content analysis:', analysis);
+
+  // Decision logic for voice selection
+  let selectedVoice;
+
+  // Priority 1: Children's stories (most specific)
+  if (analysis.isChildrenStory) {
+    if (analysis.hasFemaleProtagonist || text.includes('妹妹') || text.includes('家姐')) {
+      selectedVoice = 'linjiameimei'; // Young girl voice for children's stories
+      console.log('Selected: linjiameimei (children\'s story with female characters)');
+    } else if (analysis.hasMaleProtagonist || text.includes('哥哥') || text.includes('阿哥')) {
+      selectedVoice = 'yuanqinansheng'; // Young boy voice
+      console.log('Selected: yuanqinansheng (children\'s story with male characters)');
+    } else {
+      selectedVoice = 'yuanqishaonv'; // Default youthful female for general children's content
+      console.log('Selected: yuanqishaonv (default children\'s story voice)');
+    }
+  }
+  // Priority 2: Warm emotional stories
+  else if (analysis.isWarmEmotional) {
+    if (analysis.hasFemaleProtagonist) {
+      selectedVoice = 'qinqienvsheng'; // Intimate and gentle female
+      console.log('Selected: qinqienvsheng (warm emotional story with female protagonist)');
+    } else {
+      selectedVoice = 'yuanqinansheng'; // Warm male voice
+      console.log('Selected: yuanqinansheng (warm emotional story with male protagonist)');
+    }
+  }
+  // Priority 3: Educational content
+  else if (analysis.isEducational) {
+    if (analysis.hasFemaleProtagonist) {
+      selectedVoice = 'wenjingxuejie'; // Scholarly female student
+      console.log('Selected: wenjingxuejie (educational content with female voice)');
+    } else {
+      selectedVoice = 'boyinnansheng'; // Clear broadcast male
+      console.log('Selected: boyinnansheng (educational content with male voice)');
+    }
+  }
+  // Priority 4: Daily life stories
+  else if (analysis.isDailyLife) {
+    selectedVoice = 'shuangkuaijiejie'; // Cheerful sisterly for daily life
+    console.log('Selected: shuangkuaijiejie (daily life story)');
+  }
+  // Priority 5: Energetic/active content
+  else if (analysis.isEnergetic) {
+    selectedVoice = 'jilingshaonv'; // Smart and lively
+    console.log('Selected: jilingshaonv (energetic story)');
+  }
+  // Priority 6: Calm narrative
+  else if (analysis.isCalmNarrative) {
+    selectedVoice = 'wenrounvsheng'; // Soft and warm
+    console.log('Selected: wenrounvsheng (calm narrative)');
+  }
+  // Default: Protagonist-based selection
+  else {
+    if (analysis.hasFemaleProtagonist) {
+      selectedVoice = 'wenrounvsheng'; // Gentle female default
+      console.log('Selected: wenrounvsheng (default female protagonist)');
+    } else if (analysis.hasMaleProtagonist) {
+      selectedVoice = 'cixingnansheng'; // Magnetic male default
+      console.log('Selected: cixingnansheng (default male protagonist)');
+    } else {
+      selectedVoice = 'wenrounvsheng'; // Overall default
+      console.log('Selected: wenrounvsheng (overall default)');
+    }
+  }
+
+  return selectedVoice;
+}
+
+/**
  * Call StepFun API to synthesize Cantonese speech from text
- * Uses StepFun's step-tts-2 model with Cantonese language support
+ * Uses StepFun's step-tts-2 model with intelligent voice selection
  * @param {string} text - Cantonese text to synthesize
+ * @param {string} [voiceOverride] - Optional voice ID to override intelligent selection
  * @returns {Promise<Buffer>} - Audio buffer (MP3 format)
  */
-async function synthesizeCantoneseSpeech(text) {
+async function synthesizeCantoneseSpeech(text, voiceOverride) {
   try {
+    // Use intelligent voice selection if no override provided
+    const voiceId = voiceOverride || selectIntelligentVoice(text);
+
+    console.log(`Synthesizing speech with voice: ${voiceId}`);
+
     const response = await axios.post(
       `${process.env.STEPFUN_API_ENDPOINT || 'https://api.stepfun.com/v1'}/audio/speech`,
       {
         model: process.env.STEPFUN_MODEL || 'step-tts-2',
         input: text,
-        voice: process.env.STEPFUN_VOICE_ID || 'lively-girl', // Required: voice ID
+        voice: voiceId,
         response_format: 'mp3',
         speed: 1.0,
       },
@@ -262,6 +364,7 @@ async function synthesizeCantoneseSpeech(text) {
       }
     );
 
+    console.log(`Speech synthesis successful with voice: ${voiceId}`);
     // Return audio buffer
     return Buffer.from(response.data);
 
