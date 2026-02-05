@@ -144,6 +144,8 @@ Content-Type: multipart/form-data
      -F "image=@test.jpg"
    ```
 
+   > **注意**: 本地开发默认使用 3000 端口。Zeabur 部署会自动使用 8080 端口。
+
 ## 部署到 Zeabur
 
 ### 方法一: 通过 GitHub 连接（推荐）
@@ -176,7 +178,7 @@ zeabur deploy
 - `TENCENT_SECRET_ID`
 - `TENCENT_SECRET_KEY`
 - `TENCENT_APP_ID`
-- `PORT=3000`
+- `PORT=8080`
 - `NODE_ENV=production`
 
 ## API 密钥获取
