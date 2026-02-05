@@ -72,13 +72,28 @@ async function generateCantoneseText(imageBuffer) {
             },
             {
               type: 'text',
-              text: '请用生活化、地道的粤语（广东话）描述这张图片中的场景或物品。生成一句简短、自然的粤语句子，不要使用普通话表达。只返回粤语句子，不需要其他解释。',
+              text: `你是一位擅长创作粤语生活故事的作家。请根据用户提供的图片内容，发挥合理的联想和创意，编写一个简短、有趣、地道的粤语小故事或情景描述。
+
+**要求：**
+1. **语言**：必须使用**地道、生活化的粤语口语**，避免使用书面语或普通话词汇。
+2. **长度**：故事或描述在**3-5句话**左右，便于用户跟读学习。
+3. **内容**：
+   - **基于图片**：故事需紧密围绕图片中的核心元素（如人物、物体、场景）。
+   - **发挥联想**：为图中事物增添合理的背景、动作或对话，使其生动。
+   - **融入文化**：可自然融入广府地区的日常生活元素（如饮茶、行花街、落雨收衫等），增加亲切感。
+   - **积极有趣**：整体基调轻松、幽默或温馨，结尾可以有一个可爱的小转折或感悟。
+4. **输出格式**：只输出纯粤语故事文本，无需任何额外解释、思考过程或代码块。
+
+**示例参考（如果图片是一杯奶茶和一本书）：**
+"今日下昼，阿明偷偷走咗去楼下新开嘅茶记，叫咗杯冻奶茶。佢拎住本书扮文青，点知睇睇下书，挂住饮奶茶，滴咗两滴落本书度。佢望住个奶茶渍，自己都笑咗出声：'今次真系学识点样'入味'咯！'"
+
+**现在，请根据我提供的图片内容开始创作：**`,
             },
           ],
         },
       ],
-      max_tokens: 200,
-      temperature: 0.7,
+      max_tokens: 500,
+      temperature: 0.8,
     });
 
     // Extract the generated Cantonese text
@@ -96,6 +111,104 @@ async function generateCantoneseText(imageBuffer) {
       console.error('DeepInfra API Response:', error.response.data);
     }
     throw new Error(`Failed to generate Cantonese text: ${error.message}`);
+  }
+}
+
+/**
+ * Fallback: Generate Chinese description then translate to Cantonese story
+ * This is used when the direct Cantonese story generation fails
+ * @param {Buffer} imageBuffer - Image file buffer
+ * @returns {Promise<string>} - Cantonese story text
+ */
+async function generateCantoneseStoryWithFallback(imageBuffer) {
+  try {
+    console.log('Attempting fallback: Chinese → Cantonese story translation...');
+
+    // Initialize DeepInfra OpenAI client
+    const client = new OpenAI({
+      apiKey: process.env.DEEPINFRA_API_KEY,
+      baseURL: 'https://api.deepinfra.com/v1/openai',
+    });
+
+    // Convert image buffer to base64
+    const base64Image = imageBuffer.toString('base64');
+
+    // Step 1: Generate Chinese description first
+    const chineseDescriptionPrompt = `请用简体中文描述这张图片中的场景，包括人物、动作和背景。描述要详细一些，3-5句话。`;
+
+    const chineseResponse = await client.chat.completions.create({
+      model: 'Qwen/Qwen2.5-VL-32B-Instruct',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'image_url',
+              image_url: {
+                url: `data:image/jpeg;base64,${base64Image}`,
+              },
+            },
+            {
+              type: 'text',
+              text: chineseDescriptionPrompt,
+            },
+          ],
+        },
+      ],
+      max_tokens: 300,
+      temperature: 0.7,
+    });
+
+    const chineseText = chineseResponse.choices[0]?.message?.content?.trim();
+
+    if (!chineseText) {
+      throw new Error('Failed to generate Chinese description in fallback');
+    }
+
+    console.log('Chinese description generated:', chineseText.substring(0, 50) + '...');
+
+    // Step 2: Translate and adapt to Cantonese story
+    const translationPrompt = `你是一位擅长创作粤语生活故事的作家。我将提供一段简体中文的图片描述，请你将其翻译并改编成一个生动有趣的粤语小故事。
+
+**要求：**
+1. **语言**：必须使用**地道、生活化的粤语口语**，避免使用书面语或普通话词汇。
+2. **长度**：故事或描述在**3-5句话**左右。
+3. **风格**：
+   - 融入广府地区的日常生活元素（如饮茶、行花街等）
+   - 增加合理的想象和细节
+   - 整体基调轻松、幽默或温馨
+4. **输出格式**：只输出纯粤语故事文本，无需任何额外解释。
+
+**中文描述：**
+${chineseText}
+
+**请改编成粤语故事：**`;
+
+    const cantoneseResponse = await client.chat.completions.create({
+      model: 'Qwen/Qwen2.5-VL-32B-Instruct',
+      messages: [
+        {
+          role: 'user',
+          content: translationPrompt,
+        },
+      ],
+      max_tokens: 500,
+      temperature: 0.8,
+    });
+
+    const cantoneseStory = cantoneseResponse.choices[0]?.message?.content?.trim();
+
+    if (!cantoneseStory) {
+      throw new Error('Failed to translate to Cantonese story in fallback');
+    }
+
+    console.log('Fallback succeeded: Generated Cantonese story via translation');
+
+    return cantoneseStory;
+
+  } catch (error) {
+    console.error('Fallback process failed:', error.message);
+    throw new Error(`Fallback generation failed: ${error.message}`);
   }
 }
 
@@ -282,9 +395,21 @@ app.post('/api/generate', upload.single('image'), async (req, res) => {
 
     console.log('Processing image:', req.file.originalname);
 
-    // Step 1: Generate Cantonese text from image
-    const cantoneseText = await generateCantoneseText(req.file.buffer);
-    console.log('Generated text:', cantoneseText);
+    // Step 1: Generate Cantonese story from image
+    let cantoneseText;
+    try {
+      cantoneseText = await generateCantoneseText(req.file.buffer);
+      console.log('Generated story:', cantoneseText);
+    } catch (primaryError) {
+      console.warn('Primary generation failed, attempting fallback...', primaryError.message);
+      try {
+        cantoneseText = await generateCantoneseStoryWithFallback(req.file.buffer);
+        console.log('Fallback generation succeeded');
+      } catch (fallbackError) {
+        console.error('Both primary and fallback generation failed:', fallbackError.message);
+        throw new Error(`Failed to generate Cantonese story: ${primaryError.message}. Fallback also failed: ${fallbackError.message}`);
+      }
+    }
 
     // Step 2: Synthesize speech from Cantonese text
     const audioBuffer = await synthesizeCantoneseSpeech(cantoneseText);
@@ -301,6 +426,7 @@ app.post('/api/generate', upload.single('image'), async (req, res) => {
         text: cantoneseText,
         audioUrl: audioUrl,
         audioFormat: 'mp3',
+        type: 'story', // New identifier for story format
       },
     });
 
