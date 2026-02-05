@@ -4,10 +4,11 @@
 
 ## 功能特性
 
-- 📷 **图片识别**: 上传图片，AI 生成地道的粤语描述
-- 🎤 **语音合成**: 将粤语文字转换为自然流畅的语音
-- 🗣️ **跟读评分**: 评估用户的粤语发音，提供详细评分
+- 📷 **图片识别**: 上传图片，AI 生成地道的粤语描述（使用 DeepInfra Qwen2.5-VL）
+- 🎤 **语音合成**: 将粤语文字转换为自然流畅的语音（使用 StepFun step-tts-2）
+- 🗣️ **跟读评分**: 评估用户的粤语发音，提供详细评分（使用 DeepInfra Whisper）
 - 🚀 **容器化部署**: 支持 Docker 和 Zeabur 平台一键部署
+- 💰 **统一 API**: 所有 AI 服务统一使用 DeepInfra 平台，简化管理
 
 ## 技术栈
 
@@ -114,9 +115,6 @@ Content-Type: multipart/form-data
    ```env
    DEEPINFRA_API_KEY=your_deepinfra_api_key_here
    STEPFUN_API_KEY=your_stepfun_api_key_here
-   TENCENT_SECRET_ID=your_tencent_secret_id_here
-   TENCENT_SECRET_KEY=your_tencent_secret_key_here
-   TENCENT_APP_ID=your_tencent_app_id_here
    ```
 
 4. **启动服务**
@@ -173,11 +171,8 @@ zeabur deploy
 
 在 Zeabur 控制台中添加以下环境变量:
 
-- `DEEPINFRA_API_KEY`
-- `STEPFUN_API_KEY`
-- `TENCENT_SECRET_ID`
-- `TENCENT_SECRET_KEY`
-- `TENCENT_APP_ID`
+- `DEEPINFRA_API_KEY`（用于图片识别和语音识别）
+- `STEPFUN_API_KEY`（用于语音合成）
 - `PORT=8080`
 - `NODE_ENV=production`
 
@@ -188,7 +183,9 @@ zeabur deploy
 1. 访问 [DeepInfra](https://deepinfra.com/)
 2. 注册/登录账号
 3. 进入 API Keys 页面获取 API Key
-4. 模型使用 `Qwen/Qwen2.5-VL-32B-Instruct`（支持视觉和文本理解）
+4. 一个 API Key 可同时用于：
+   - 图片识别：`Qwen/Qwen2.5-VL-32B-Instruct` 模型
+   - 语音识别：`openai/whisper-large-v3` 模型
 
 ### 阶跃星辰 (StepFun)
 
@@ -196,14 +193,6 @@ zeabur deploy
 2. 注册/登录账号
 3. 申请 API 访问权限
 4. 获取 API Key（支持 step-tts-2 粤语语音合成）
-
-### 腾讯云
-
-1. 访问 [腾讯云](https://cloud.tencent.com/)
-2. 注册/登录账号
-3. 开通 "语音识别" 服务
-4. 获取 Secret ID、Secret Key 和 App ID
-5. 确保使用 `16k_yue` 引擎模型（粤语识别）
 
 ## 项目结构
 
@@ -223,9 +212,9 @@ Learn-Cantonese/
 
 ✅ **真实 API 集成**: 当前代码已集成真实的第三方 API 调用:
 
-1. **DeepInfra**: 使用 `Qwen/Qwen2.5-VL-32B-Instruct` 多模态模型进行图像理解和粤语文本生成
+1. **DeepInfra Vision**: 使用 `Qwen/Qwen2.5-VL-32B-Instruct` 多模态模型进行图像理解和粤语文本生成
 2. **阶跃星辰 TTS**: 使用 `step-tts-2` 模型支持粤语语音合成
-3. **腾讯云 ASR**: 使用 `16k_yue` 引擎模型支持粤语语音识别（TC3-HMAC-SHA256 签名）
+3. **DeepInfra Whisper**: 使用 OpenAI `whisper-large-v3` 模型支持中文语音识别（包括粤语）
 
 ### 安全建议
 

@@ -140,138 +140,76 @@ async function synthesizeCantoneseSpeech(text) {
   }
 }
 
-// ============== TENCENT ASR API (Cantonese Speech Recognition) ==============
+// ============== DEEPINFRA WHISPER API (Cantonese Speech Recognition) ==============
 
 /**
- * Generate Tencent Cloud TC3-HMAC-SHA256 signature
- * @param {string} method - HTTP method (POST)
- * @param {string} endpoint - API endpoint
- * @param {Object} params - Query parameters
- * @param {string} body - Request body
- * @param {string} timestamp - Request timestamp
- * @returns {string} - Authorization header
- */
-function generateTencentSignature(method, endpoint, params, body, timestamp) {
-  const SECRET_ID = process.env.TENCENT_SECRET_ID;
-  const SECRET_KEY = process.env.TENCENT_SECRET_KEY;
-  const service = 'asr';
-  const version = '2019-06-14';
-  const host = 'asr.cloud.tencent.com';
-  const algorithm = 'TC3-HMAC-SHA256';
-
-  // Step 1: Build canonical request string
-  const httpRequestMethod = method;
-  const canonicalUri = '/';
-  const canonicalQueryString = Object.keys(params)
-    .sort()
-    .map(key => `${encodeURIComponent(key)}=${encodeURIComponent(params[key])}`)
-    .join('&');
-  const canonicalHeaders = `content-type:application/json\nhost:${host}\n`;
-  const signedHeaders = 'content-type;host';
-  const hashedRequestPayload = crypto.createHash('sha256').update(body).digest('hex');
-  const canonicalRequest = `${httpRequestMethod}\n${canonicalUri}\n${canonicalQueryString}\n${canonicalHeaders}\n${signedHeaders}\n${hashedRequestPayload}`;
-
-  // Step 2: Build string to sign
-  const date = new Date(timestamp * 1000).toISOString().substr(0, 10);
-  const credentialScope = `${date}/${service}/tc3_request`;
-  const hashedCanonicalRequest = crypto.createHash('sha256').update(canonicalRequest).digest('hex');
-  const stringToSign = `${algorithm}\n${timestamp}\n${credentialScope}\n${hashedCanonicalRequest}`;
-
-  // Step 3: Calculate signature
-  const kDate = crypto.createHmac('sha256', `TC3${SECRET_KEY}`).update(date).digest();
-  const kService = crypto.createHmac('sha256', kDate).update(service).digest();
-  const kSigning = crypto.createHmac('sha256', kService).update('tc3_request').digest();
-  const signature = crypto.createHmac('sha256', kSigning).update(stringToSign).digest('hex');
-
-  // Step 4: Build authorization header
-  const authorization = `${algorithm} Credential=${SECRET_ID}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
-
-  return authorization;
-}
-
-/**
- * Call Tencent Cloud ASR to recognize Cantonese speech
- * Uses 16k_yue engine model for Cantonese recognition
+ * Call DeepInfra Whisper to recognize Cantonese speech
+ * Uses OpenAI's Whisper model via DeepInfra REST API
  * @param {Buffer} audioBuffer - Audio file buffer
  * @returns {Promise<{text: string, confidence: number}>} - Recognized text and confidence score
  */
 async function recognizeCantoneseSpeech(audioBuffer) {
   try {
-    const SECRET_ID = process.env.TENCENT_SECRET_ID;
-    const SECRET_KEY = process.env.TENCENT_SECRET_KEY;
-    const APP_ID = process.env.TENCENT_APP_ID;
+    const model = process.env.WHISPER_MODEL || 'openai/whisper-large-v3';
 
-    if (!SECRET_ID || !SECRET_KEY || !APP_ID) {
-      throw new Error('Missing Tencent Cloud credentials: TENCENT_SECRET_ID, TENCENT_SECRET_KEY, or TENCENT_APP_ID');
-    }
+    // Create form data with audio file
+    const FormData = require('form-data');
+    const form = new FormData();
 
-    const timestamp = Math.floor(Date.now() / 1000);
-    const endpoint = 'asr.cloud.tencent.com';
-    const base64Audio = audioBuffer.toString('base64');
-
-    const params = {
-      EngineModelType: '16k_yue', // Cantonese engine
-      ChannelNum: 1,
-      Data: base64Audio,
-      DataLen: audioBuffer.length,
-      Format: 'mp3',
-      SampleRate: 16000,
-      Version: '2019-06-14',
-      Region: process.env.TENCENT_REGION || 'ap-guangzhou',
-      Timestamp: timestamp,
-      Action: 'SentenceRecognition',
-      Nonce: Math.random().toString(36).substr(2),
-      SecretId: SECRET_ID,
-    };
-
-    const body = JSON.stringify({
-      EngineModelType: '16k_yue',
-      ChannelNum: 1,
-      Data: base64Audio,
-      DataLen: audioBuffer.length,
-      Format: 'mp3',
-      SampleRate: 16000,
+    // Append audio buffer as a file
+    form.append('audio', audioBuffer, {
+      filename: 'audio.mp3',
+      contentType: 'audio/mp3',
     });
 
-    const signature = generateTencentSignature('POST', endpoint, {}, body, timestamp);
+    // Append parameters
+    form.append('model', model);
+    form.append('language', 'zh'); // Chinese (will handle both Mandarin and Cantonese)
+    form.append('response_format', 'verbose_json'); // Get detailed response with timestamps
 
+    // Call DeepInfra's Whisper REST API
     const response = await axios.post(
-      `https://${endpoint}/`,
-      body,
+      `https://api.deepinfra.com/v1/openai/whisper`,
+      form,
       {
         headers: {
-          'Authorization': signature,
-          'Content-Type': 'application/json',
-          'Host': endpoint,
+          ...form.getHeaders(),
+          'Authorization': `Bearer ${process.env.DEEPINFRA_API_KEY}`,
         },
-        params: {
-          Action: 'SentenceRecognition',
-          Version: '2019-06-14',
-          Region: params.Region,
-        },
-        timeout: 30000,
+        timeout: 60000,
       }
     );
 
-    if (response.data.Response.Error) {
-      throw new Error(`Tencent ASR Error: ${response.data.Response.Error.Message}`);
+    // Extract the recognized text
+    const text = response.data.text?.trim() || '';
+
+    if (!text) {
+      throw new Error('Empty response from Whisper API');
     }
 
-    const result = response.data.Response.Result;
-    // Convert to number and default to 0.9 if not provided
-    const confidence = typeof response.data.Response.Confidence === 'number'
-      ? response.data.Response.Confidence
-      : 0.9;
+    // Calculate average confidence from segments if available
+    let confidence = 0.95; // Default high confidence
+    if (response.data.segments && response.data.segments.length > 0) {
+      // Use average probability from segments as confidence
+      const avgProbability = response.data.segments.reduce(
+        (sum, seg) => sum + (seg.avg_logprob || 0),
+        0
+      ) / response.data.segments.length;
+      // Convert logprob to confidence (rough approximation)
+      confidence = Math.max(0.5, Math.min(1.0, (avgProbability + 2) / 4));
+    }
+
+    console.log(`Whisper recognized text: ${text.substring(0, 50)}...`);
 
     return {
-      text: result,
+      text: text,
       confidence: confidence,
     };
 
   } catch (error) {
-    console.error('Tencent ASR API Error:', error.message);
+    console.error('DeepInfra Whisper API Error:', error.message);
     if (error.response) {
-      console.error('Tencent ASR Response:', error.response.data);
+      console.error('DeepInfra Whisper Response:', error.response.data);
     }
     throw new Error(`Failed to recognize speech: ${error.message}`);
   }
@@ -470,9 +408,9 @@ app.listen(PORT, () => {
 ╚════════════════════════════════════════════════════════════╝
 
 ✅ APIs configured:
-   - DeepInfra (Qwen2.5-VL-32B-Instruct)
+   - DeepInfra Vision (Qwen2.5-VL-32B-Instruct)
    - StepFun TTS (step-tts-2)
-   - Tencent ASR (16k_yue)
+   - DeepInfra Whisper (whisper-large-v3)
 
 ⚠️  Make sure all required environment variables are set!
 `);
