@@ -263,8 +263,8 @@ function selectIntelligentVoice(text) {
     // Educational content
     isEducational: /学习|學習|读书|睇書|课堂|課堂|学校|學校|知识|知識|教学|教材|学习班|补习/.test(text),
 
-    // Daily life scenes (Hong Kong style)
-    isDailyLife: /日常生活|生活|街市|茶餐厅|茶记|饮茶|吃饭|食飯|落雨|收衫|上班|放工|买菜|煮饭/.test(text),
+    // Daily life scenes (Hong Kong style) - expanded with kitchen, cooking, home scenes
+    isDailyLife: /日常生活|生活|街市|茶餐厅|茶记|饮茶|吃饭|食飯|落雨|收衫|上班|放工|买菜|煮饭|厨房|厨|做饭|烹饪|煮食|家里|屋企|家|家庭|家居|餐厅|饭厅/.test(text),
 
     // Fitness/Sports scenes (NEW)
     isFitnessSports: /健身|锻炼|运动|跑步|打球|游泳|瑜伽|做运动|体能|训练|操场|体育馆|器材/.test(text),
@@ -273,11 +273,11 @@ function selectIntelligentVoice(text) {
     isCalmNarrative: /静静|靜靜|慢慢|漸漸|轻轻|輕輕|缓缓|緩緩|平静|平靜|安靜|悠闲|悠閒|放松|放鬆|宁静|寧靜|和谐|和諧|舒适|舒適|惬意|享受|安详|安詳/.test(text),
 
     // Energetic/active content - expanded keywords
-    isEnergetic: /嘻嘻哈哈|哈哈|嘻嘻|热烈|熱烈|热闹|熱鬧|欢快|歡快|跳跃|跳躍|跑|冲|衝|活力|运动|健身|锻炼|充满活力|精神|元气/.test(text),
+    isEnergetic: /嘻嘻哈哈|哈哈|嘻嘻|热烈|熱烈|热闹|熱鬧|欢快|歡快|跳跃|跳躍|跑|冲|衝|活力|运动|健身|锻炼|充满活力|精神|元气|忙碌|紧张|激烈/.test(text),
 
-    // Protagonist gender detection - removed generic pronouns "佢哋" and "他們"/"她們"
-    hasMaleProtagonist: /小明|阿明|哥哥|阿哥|爸爸|公公|先生|男人|男子|男生|小伙子|男孩|男仔|爸爸/.test(text),
-    hasFemaleProtagonist: /小美|阿美|姐姐|家姐|妹妹|細妹|妈妈|婆婆|女人|女子|女生|女仔|姑娘|女孩|阿婆/.test(text),
+    // Protagonist gender detection - expanded with profession titles
+    hasMaleProtagonist: /小明|阿明|哥哥|阿哥|爸爸|公公|先生|男人|男子|男生|小伙子|男孩|男仔|师傅|厨师|父亲|爷爷|叔叔|伯伯/.test(text),
+    hasFemaleProtagonist: /小美|阿美|姐姐|家姐|妹妹|細妹|妈妈|婆婆|女人|女子|女生|女仔|姑娘|女孩|阿婆|母亲|奶奶|阿姨|师姐|师妹/.test(text),
   };
 
   // Override: If adult indicators are present, force isChildrenStory to false
