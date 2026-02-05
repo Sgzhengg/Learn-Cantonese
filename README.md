@@ -112,7 +112,7 @@ Content-Type: multipart/form-data
 
    编辑 `.env` 文件，填入你的 API 密钥:
    ```env
-   BAIDU_API_KEY=your_baidu_api_key_here
+   DEEPINFRA_API_KEY=your_deepinfra_api_key_here
    STEPFUN_API_KEY=your_stepfun_api_key_here
    TENCENT_SECRET_ID=your_tencent_secret_id_here
    TENCENT_SECRET_KEY=your_tencent_secret_key_here
@@ -173,7 +173,7 @@ zeabur deploy
 
 在 Zeabur 控制台中添加以下环境变量:
 
-- `BAIDU_API_KEY`
+- `DEEPINFRA_API_KEY`
 - `STEPFUN_API_KEY`
 - `TENCENT_SECRET_ID`
 - `TENCENT_SECRET_KEY`
@@ -183,12 +183,12 @@ zeabur deploy
 
 ## API 密钥获取
 
-### 百度 AI Studio
+### DeepInfra
 
-1. 访问 [百度 AI Studio](https://aistudio.baidu.com/)
+1. 访问 [DeepInfra](https://deepinfra.com/)
 2. 注册/登录账号
-3. 进入应用管理获取 API Key
-4. 确保开通 `ernie-4.5-turbo-vl` 多模态模型权限
+3. 进入 API Keys 页面获取 API Key
+4. 模型使用 `Qwen/Qwen2.5-VL-32B-Instruct`（支持视觉和文本理解）
 
 ### 阶跃星辰 (StepFun)
 
@@ -223,7 +223,7 @@ Learn-Cantonese/
 
 ✅ **真实 API 集成**: 当前代码已集成真实的第三方 API 调用:
 
-1. **百度 AI Studio**: 使用 `ernie-4.5-turbo-vl` 多模态模型进行图像理解和粤语文本生成
+1. **DeepInfra**: 使用 `Qwen/Qwen2.5-VL-32B-Instruct` 多模态模型进行图像理解和粤语文本生成
 2. **阶跃星辰 TTS**: 使用 `step-tts-2` 模型支持粤语语音合成
 3. **腾讯云 ASR**: 使用 `16k_yue` 引擎模型支持粤语语音识别（TC3-HMAC-SHA256 签名）
 

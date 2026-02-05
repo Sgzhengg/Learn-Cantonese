@@ -38,28 +38,28 @@ const upload = multer({
   },
 });
 
-// ============== BAIDU AI API (Image to Cantonese Text) ==============
+// ============== DEEPINFRA API (Image to Cantonese Text) ==============
 
 /**
- * Call Baidu AI to generate Cantonese description from image
- * Uses Baidu AI Studio's OpenAI-compatible API with ernie-4.5-turbo-vl model
+ * Call DeepInfra to generate Cantonese description from image
+ * Uses DeepInfra's Qwen/Qwen2-VL-7B-Instruct multimodal model
  * @param {Buffer} imageBuffer - Image file buffer
  * @returns {Promise<string>} - Cantonese text description
  */
 async function generateCantoneseText(imageBuffer) {
   try {
-    // Initialize Baidu AI OpenAI client
+    // Initialize DeepInfra OpenAI client
     const client = new OpenAI({
-      apiKey: process.env.BAIDU_API_KEY,
-      baseURL: 'https://aistudio.baidu.com/llm/lmapi/v3',
+      apiKey: process.env.DEEPINFRA_API_KEY,
+      baseURL: 'https://api.deepinfra.com/v1/openai',
     });
 
     // Convert image buffer to base64
     const base64Image = imageBuffer.toString('base64');
 
-    // Call Baidu's multimodal API
+    // Call DeepInfra's multimodal API with Qwen2.5-VL
     const response = await client.chat.completions.create({
-      model: 'ernie-4.5-turbo-vl',
+      model: 'Qwen/Qwen2.5-VL-32B-Instruct',
       messages: [
         {
           role: 'user',
@@ -85,15 +85,15 @@ async function generateCantoneseText(imageBuffer) {
     const cantoneseText = response.choices[0]?.message?.content?.trim();
 
     if (!cantoneseText) {
-      throw new Error('Empty response from Baidu AI');
+      throw new Error('Empty response from DeepInfra API');
     }
 
     return cantoneseText;
 
   } catch (error) {
-    console.error('Baidu API Error:', error.message);
+    console.error('DeepInfra API Error:', error.message);
     if (error.response) {
-      console.error('Baidu API Response:', error.response.data);
+      console.error('DeepInfra API Response:', error.response.data);
     }
     throw new Error(`Failed to generate Cantonese text: ${error.message}`);
   }
@@ -114,10 +114,7 @@ async function synthesizeCantoneseSpeech(text) {
       {
         model: process.env.STEPFUN_MODEL || 'step-tts-2',
         input: text,
-        voice_label: {
-          language: '粤语', // Cantonese language
-          gender: process.env.STEPFUN_GENDER || 'female', // male or female
-        },
+        voice: process.env.STEPFUN_VOICE_ID || 'lively-girl', // Required: voice ID
         response_format: 'mp3',
         speed: 1.0,
       },
@@ -473,7 +470,7 @@ app.listen(PORT, () => {
 ╚════════════════════════════════════════════════════════════╝
 
 ✅ APIs configured:
-   - Baidu AI (ernie-4.5-turbo-vl)
+   - DeepInfra (Qwen2.5-VL-32B-Instruct)
    - StepFun TTS (step-tts-2)
    - Tencent ASR (16k_yue)
 
