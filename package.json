@@ -1,0 +1,35 @@
+{
+  "name": "learn-cantonese-api",
+  "version": "1.0.0",
+  "description": "AI-powered Cantonese learning API - Upload images to learn Cantonese with voice synthesis and pronunciation evaluation",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "nodemon app.js"
+  },
+  "keywords": [
+    "cantonese",
+    "ai",
+    "tts",
+    "asr",
+    "language-learning"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "multer": "^1.4.5-lts.1",
+    "axios": "^1.6.2",
+    "dotenv": "^16.3.1",
+    "form-data": "^4.0.0",
+    "cors": "^2.8.5",
+    "levenshtein": "^1.0.2",
+    "openai": "^4.20.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
