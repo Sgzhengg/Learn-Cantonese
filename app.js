@@ -251,11 +251,13 @@ ${chineseText}
 function selectIntelligentVoice(text) {
   // Analysis keywords for story categorization
   const analysis = {
-    // Refined children's story detection - removed generic "开心", added more specific child terms
-    isChildrenStory: /小朋友|细路|细路仔|小孩|小孩仔|儿童|兒童|玩耍|玩木块|嘻嘻哈哈|童真|呀|咧|咯|搭积木|搭高塔/.test(text),
+    // Refined children's story detection - removed generic "开心" and standalone particles
+    // Only match specific child-related terms and particle combinations
+    isChildrenStory: /小朋友|细路|细路仔|小孩|小孩仔|儿童|兒童|玩耍|玩木块|嘻嘻哈哈|童真|搭积木|搭高塔|细路仔呀|细路仔咧|小孩呀|小孩咯/.test(text),
 
     // Adult/adolence indicators - if these are present, it's NOT a children's story
-    hasAdultIndicators: /市民|锻炼|健身|运动|工作|上班|公司|职员|成人|成年人|青年|老人/.test(text),
+    // Expanded with more professions, vehicles, and adult-related terms
+    hasAdultIndicators: /市民|锻炼|健身|运动|工作|上班|公司|职员|成人|成年人|青年|老人|司机|老板|职员|店员|顾客|街坊|邻居|警察|医生|护士|老师|学生|开车|驾车|骑车|路人|行人|乘客|店主|商贩|员工/.test(text),
 
     // Warm emotional stories
     isWarmEmotional: /温暖|温馨|幸福|拥抱|亲人|家人|婆婆|公公|家人团聚|亲情|感动|温馨/.test(text),
@@ -263,8 +265,8 @@ function selectIntelligentVoice(text) {
     // Educational content
     isEducational: /学习|學習|读书|睇書|课堂|課堂|学校|學校|知识|知識|教学|教材|学习班|补习/.test(text),
 
-    // Daily life scenes (Hong Kong style) - expanded with kitchen, cooking, home scenes
-    isDailyLife: /日常生活|生活|街市|茶餐厅|茶记|饮茶|吃饭|食飯|落雨|收衫|上班|放工|买菜|煮饭|厨房|厨|做饭|烹饪|煮食|家里|屋企|家|家庭|家居|餐厅|饭厅/.test(text),
+    // Daily life scenes (Hong Kong style) - expanded with street, shop, vehicle scenes
+    isDailyLife: /日常生活|生活|街市|茶餐厅|茶记|饮茶|吃饭|食飯|落雨|收衫|上班|放工|买菜|煮饭|厨房|厨|做饭|烹饪|煮食|家里|屋企|家|家庭|家居|餐厅|饭厅|街道|街边|街市|马路|路|店铺|铺头|商店|商场|购物|逛街|开车|驾车|骑车|坐车|乘车|交通|塞车|堵车|车流/.test(text),
 
     // Fitness/Sports scenes (NEW)
     isFitnessSports: /健身|锻炼|运动|跑步|打球|游泳|瑜伽|做运动|体能|训练|操场|体育馆|器材/.test(text),
