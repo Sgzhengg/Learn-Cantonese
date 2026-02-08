@@ -1,14 +1,40 @@
-# 拍照学粤语 API 服务
+# 拍照学粤语 - AI 驱动的粤语学习应用
 
-一个基于 AI 的粤语学习后端 API 服务，允许用户上传图片生成粤语描述和语音，并支持跟读评分功能。
+一个完整的粤语学习应用，包含后端 API 和移动端应用。通过拍照上传图片，AI 自动生成双语故事，用户可以跟读练习并获得实时评分。
 
-## 功能特性
+## 📱 项目组成
 
-- 📷 **图片识别**: 上传图片，AI 生成地道的粤语描述（使用 DeepInfra Qwen2.5-VL）
+- **后端 API** ([app.js](./app.js))：Node.js + Express 服务
+- **移动应用** ([frontend/](./frontend/))：React Native + Expo 应用
+
+## ✨ 功能特性
+
+### 后端 API
+- 📷 **图片识别**: 上传图片，AI 生成地道的粤语双语故事（使用 DeepInfra Qwen2.5-VL）
 - 🎤 **语音合成**: 将粤语文字转换为自然流畅的语音（使用 StepFun step-tts-2）
+- 🎯 **智能音色**: 根据故事内容自动选择合适的音色（19种音色）
 - 🗣️ **跟读评分**: 评估用户的粤语发音，提供详细评分（使用 DeepInfra Whisper）
 - 🚀 **容器化部署**: 支持 Docker 和 Zeabur 平台一键部署
-- 💰 **统一 API**: 所有 AI 服务统一使用 DeepInfra 平台，简化管理
+
+### 移动应用
+- 📷 **拍照上传**: 支持相机拍照和相册选择
+- 📖 **双语故事**: 普通话版 + 粤语版对照显示
+- 🎵 **音频播放**: 听地道的粤语发音，支持进度控制
+- 🎙️ **跟读录音**: 录制你的发音，系统实时评分
+- 📊 **详细反馈**: 多维度分析（相似度、流利度、置信度）
+- 📚 **历史记录**: 随时回顾学习历程
+
+## 🎨 界面设计
+
+### 设计原则
+- ✅ **清爽**: 留白充足，不堆砌内容
+- ✅ **舒服**: 柔和配色，圆角设计，护眼易读
+- ✅ **易用**: 线性流程，大按钮，操作直观
+
+### 配色方案
+- 主色：#4ECDC4（柔和的蓝绿色）
+- 辅助色：#FF6B6B（温暖的橙色）
+- 背景色：#F7F9FC（米白色）
 
 ## 技术栈
 
@@ -84,7 +110,46 @@ Content-Type: multipart/form-data
 }
 ```
 
-## 本地开发
+## 🚀 快速开始
+
+### 5分钟体验"拍照学粤语"移动应用
+
+1. **启动后端服务**
+   ```bash
+   cd e:\Learn-Cantonese
+   npm install
+   node app.js
+   ```
+
+2. **启动移动应用**
+   ```bash
+   cd e:\Learn-Cantonese\frontend
+   npm install
+   npm start
+   ```
+
+3. **在手机上预览**
+   - 下载 Expo Go app（应用商店）
+   - 扫描终端显示的 QR 码
+   - 开始使用！
+
+详细步骤见 [移动应用快速启动指南](./frontend/QUICKSTART.md)
+
+---
+
+## 📖 详细文档
+
+### 后端 API
+- API 端点说明（见下方）
+- [Dockerfile](./Dockerfile) 容器化部署
+- [.env.example](./.env.example) 环境变量配置
+
+### 移动应用
+- [frontend/README.md](./frontend/README.md) - 项目概览
+- [frontend/QUICKSTART.md](./frontend/QUICKSTART.md) - 快速启动
+- [frontend/PROJECT_SUMMARY.md](./frontend/PROJECT_SUMMARY.md) - 开发总结
+
+## 🔧 本地开发（后端）
 
 ### 前置要求
 
@@ -194,16 +259,43 @@ zeabur deploy
 3. 申请 API 访问权限
 4. 获取 API Key（支持 step-tts-2 粤语语音合成）
 
-## 项目结构
+## 📂 项目结构
 
 ```
 Learn-Cantonese/
-├── app.js              # 主应用文件
-├── package.json        # 依赖配置
-├── Dockerfile          # Docker 构建文件
-├── .dockerignore       # Docker 忽略文件
-├── .env.example        # 环境变量示例
-└── README.md           # 项目文档
+├── app.js                    # 后端主应用文件
+├── package.json              # 后端依赖配置
+├── Dockerfile                # Docker 构建文件
+├── .env.example              # 环境变量示例
+│
+├── frontend/                 # 移动应用（React Native + Expo）
+│   ├── app/                  # Expo Router 页面路由
+│   │   ├── index.tsx         # 首页（拍照上传）
+│   │   ├── learning/         # 学习页面
+│   │   ├── recording/        # 录音页面
+│   │   └── score/            # 评分页面
+│   ├── src/
+│   │   ├── components/       # 通用组件
+│   │   │   ├── Button.tsx
+│   │   │   └── Card.tsx
+│   │   ├── screens/          # 页面组件
+│   │   │   ├── HomeScreen.tsx
+│   │   │   ├── LearningScreen.tsx
+│   │   │   ├── RecordingScreen.tsx
+│   │   │   └── ScoreScreen.tsx
+│   │   ├── services/         # 服务层
+│   │   │   ├── api.ts        # API 服务
+│   │   │   └── store.ts      # Zustand 状态管理
+│   │   ├── constants/        # 配置常量
+│   │   │   ├── colors.ts     # 颜色配置
+│   │   │   └── dimensions.ts # 尺寸配置
+│   │   └── types/            # TypeScript 类型定义
+│   ├── README.md             # 移动应用文档
+│   ├── QUICKSTART.md         # 快速启动指南
+│   ├── PROJECT_SUMMARY.md    # 项目总结
+│   └── package.json          # 前端依赖配置
+│
+└── README.md                 # 项目总览（本文件）
 ```
 
 ## 注意事项

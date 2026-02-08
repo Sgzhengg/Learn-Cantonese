@@ -9,6 +9,7 @@ const cors = require('cors');
 const Levenshtein = require('levenshtein');
 const OpenAI = require('openai');
 const crypto = require('crypto');
+const tencentcloud = require("tencentcloud-sdk-nodejs");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -38,26 +39,39 @@ const upload = multer({
   },
 });
 
+// ============== TENCENT CLOUD TTS CLIENT ==============
+// Initialize Tencent Cloud TTS client for Cantonese speech synthesis
+const TtsClient = tencentcloud.tts.v20190823.Client;
+const clientConfig = {
+  credential: {
+    secretId: process.env.TENCENT_SECRET_ID,
+    secretKey: process.env.TENCENT_SECRET_KEY,
+  },
+  region: process.env.TENCENT_TTS_REGION || "ap-guangzhou",
+  profile: {
+    httpProfile: {
+      endpoint: "tts.tencentcloudapi.com",
+    },
+  },
+};
+const ttsClient = new TtsClient(clientConfig);
+
 // ============== DEEPINFRA API (Image to Cantonese Text) ==============
 
 /**
- * Call DeepInfra to generate Cantonese description from image
- * Uses DeepInfra's Qwen/Qwen2-VL-7B-Instruct multimodal model
+ * Call DeepInfra to generate Mandarin description from image
  * @param {Buffer} imageBuffer - Image file buffer
- * @returns {Promise<string>} - Cantonese text description
+ * @returns {Promise<string>} - Mandarin text description
  */
-async function generateCantoneseText(imageBuffer) {
+async function generateMandarinText(imageBuffer) {
   try {
-    // Initialize DeepInfra OpenAI client
     const client = new OpenAI({
       apiKey: process.env.DEEPINFRA_API_KEY,
       baseURL: 'https://api.deepinfra.com/v1/openai',
     });
 
-    // Convert image buffer to base64
     const base64Image = imageBuffer.toString('base64');
 
-    // Call DeepInfra's multimodal API with Qwen2.5-VL
     const response = await client.chat.completions.create({
       model: 'Qwen/Qwen2.5-VL-32B-Instruct',
       messages: [
@@ -72,48 +86,67 @@ async function generateCantoneseText(imageBuffer) {
             },
             {
               type: 'text',
-              text: `你是一位擅长创作粤语学习内容的作家。请根据用户提供的图片内容，为粤语学习者创作一个简短的双语故事。
+              text: `请用标准普通话书面语描述这张照片的内容（2-3句话）。
 
-**要求：**
-1. **格式**：必须按以下格式输出，分为两部分：
+要求：
+- 使用标准普通话书面语，类似新闻联播风格
+- 使用标准词汇：这里、这个、他们、什么、怎么、戴着、坐着、房间、里面、墙、门、窗户
+- 不要使用粤语词汇
 
-   **（普通话版）**
-   [用标准普通话讲述图片内容，2-3句话]
-
-   **（粤语版）**
-   [用地道粤语口语讲述同样的内容，2-3句话]
-
-2. **长度**：每个版本控制在**2-3句话**，简洁精炼，便于跟读。
-
-3. **内容**：
-   - **基于图片**：紧密围绕图片中的核心元素（人物、物体、场景）。
-   - **保持一致**：两个版本讲述的是同一个场景，只是语言不同。
-   - **融入文化**：可自然融入广府地区日常生活元素（如饮茶、行花街、落雨收衫等）。
-   - **积极有趣**：整体基调轻松、温馨。
-
-4. **语言风格**：
-   - 普通话版：使用标准普通话书面语
-   - 粤语版：使用地道粤语口语（如：呢度、嗰度、咁、唔、佢等）
-
-5. **输出格式**：只输出上述两部分内容，无需其他解释。
-
-**示例参考（如果图片是一杯奶茶和一本书）：**
-**（普通话版）**
-今天下午，小明偷偷去了楼下新开的茶餐厅，点了一杯冻奶茶。他拿着书装文艺，结果看着看着，太专注喝奶茶，不小心滴了两滴在书上。
-
-**（粤语版）**
-今日下昼，阿明偷偷走咗去楼下新开嘅茶记，叫咗杯冻奶茶。佢拎住本书扮文青，点知睇睇下书，挂住饮奶茶，滴咗两滴落本书度。
-
-**现在，请根据我提供的图片内容开始创作：**`,
+只输出描述文本，不要添加其他内容。`,
             },
           ],
         },
       ],
-      max_tokens: 500,
-      temperature: 0.8,
+      max_tokens: 200,
+      temperature: 0.3,
     });
 
-    // Extract the generated Cantonese text
+    const mandarinText = response.choices[0]?.message?.content?.trim();
+
+    if (!mandarinText) {
+      throw new Error('Empty response from DeepInfra API');
+    }
+
+    return mandarinText;
+
+  } catch (error) {
+    console.error('DeepInfra API Error (Mandarin):', error.message);
+    throw new Error(`Failed to generate Mandarin text: ${error.message}`);
+  }
+}
+
+/**
+ * Translate Mandarin text to Cantonese
+ * @param {string} mandarinText - Mandarin text to translate
+ * @returns {Promise<string>} - Cantonese translation
+ */
+async function translateToCantonese(mandarinText) {
+  try {
+    const client = new OpenAI({
+      apiKey: process.env.DEEPINFRA_API_KEY,
+      baseURL: 'https://api.deepinfra.com/v1/openai',
+    });
+
+    const response = await client.chat.completions.create({
+      model: 'Qwen/Qwen2.5-VL-32B-Instruct',
+      messages: [
+        {
+          role: 'user',
+          content: `请将以下普通话文本翻译成地道粤语口语：
+
+${mandarinText}
+
+要求：
+- 使用地道粤语口语词汇：呢度、嗰个、佢哋、乜嘢、点解、戴住、坐喺、房间、入面、牆、門、窗
+- 保持原意不变，只是把普通话换成地道粤语说法
+- 只输出翻译结果，不要添加其他内容`,
+        },
+      ],
+      max_tokens: 200,
+      temperature: 0.3,
+    });
+
     const cantoneseText = response.choices[0]?.message?.content?.trim();
 
     if (!cantoneseText) {
@@ -123,11 +156,41 @@ async function generateCantoneseText(imageBuffer) {
     return cantoneseText;
 
   } catch (error) {
-    console.error('DeepInfra API Error:', error.message);
-    if (error.response) {
-      console.error('DeepInfra API Response:', error.response.data);
-    }
-    throw new Error(`Failed to generate Cantonese text: ${error.message}`);
+    console.error('DeepInfra API Error (Cantonese):', error.message);
+    throw new Error(`Failed to translate to Cantonese: ${error.message}`);
+  }
+}
+
+/**
+ * Generate both Mandarin and Cantonese text from image
+ * Uses two separate AI calls for better accuracy
+ * @param {Buffer} imageBuffer - Image file buffer
+ * @returns {Promise<{mandarin: string, cantonese: string}>} - Both texts
+ */
+async function generateBilingualText(imageBuffer) {
+  try {
+    // Step 1: Generate Mandarin description
+    console.log('Generating Mandarin text...');
+    const mandarinText = await generateMandarinText(imageBuffer);
+    console.log('Mandarin text generated:', mandarinText.substring(0, 50) + '...');
+
+    // Step 2: Translate to Cantonese
+    console.log('Translating to Cantonese...');
+    const cantoneseText = await translateToCantonese(mandarinText);
+    console.log('Cantonese text generated:', cantoneseText.substring(0, 50) + '...');
+
+    // Combine in the required format
+    const combinedText = `**（普通话版）**
+${mandarinText}
+
+**（粤语版）**
+${cantoneseText}`;
+
+    return combinedText;
+
+  } catch (error) {
+    console.error('Bilingual text generation error:', error.message);
+    throw error;
   }
 }
 
@@ -185,25 +248,34 @@ async function generateCantoneseStoryWithFallback(imageBuffer) {
     console.log('Chinese description generated:', chineseText.substring(0, 50) + '...');
 
     // Step 2: Translate and adapt to bilingual story
-    const translationPrompt = `你是一位擅长创作粤语学习内容的作家。我将提供一段简体中文的图片描述，请你将其改编成双语学习内容。
+    const translationPrompt =`你是一位专业的普通话和粤语双语教师。请将以下图片描述改编成双语学习材料。
 
-**要求：**
-1. **格式**：必须按以下格式输出，分为两部分：
+【关键要求】必须严格区分标准普通话和地道粤语！
 
-   **（普通话版）**
-   [使用提供的中文描述，稍作润色，2-3句话]
+**输出格式（严格遵守）：**
 
-   **（粤语版）**
-   [用地道粤语口语翻译上述内容，2-3句话]
+**（普通话版）**
+[这里是标准普通话书面语，稍作润色，2-3句话]
 
-2. **长度**：每个版本控制在**2-3句话**，简洁精炼。
-3. **粤语风格**：使用地道粤语口语（如：呢度、嗰度、咁、唔、佢等）
-4. **输出格式**：只输出上述两部分内容，无需其他解释。
+**（粤语版）**
+[这里是地道粤语口语，2-3句话]
 
-**中文描述：**
+**语言规范：**
+
+【普通话版】必须是：
+- 标准普通话书面语，类似语文课本的语言风格
+- 可以使用：这里、这个、他们、什么、怎么
+- 禁止使用：呢度、嗰度、咁、唔、佢、嘅、咗、噉、㖞、冇
+
+【粤语版】必须是：
+- 地道广东话口语，使用粤语字
+- 应该使用：呢度、嗰度、咁、唔、佢、嘅、咗、噉、㖞、冇
+- 禁止使用：这里、这个（太书面化）
+
+**图片描述：**
 ${chineseText}
 
-**请改编成双语内容：**`;
+**请改编成双语学习材料：**`;
 
     const cantoneseResponse = await client.chat.completions.create({
       model: 'Qwen/Qwen2.5-VL-32B-Instruct',
@@ -233,183 +305,153 @@ ${chineseText}
   }
 }
 
-// ============== STEPFUN TTS API (Text to Cantonese Speech) ==============
+// ============== TENCENT CLOUD TTS API (Text to Cantonese Speech) ==============
 
 /**
- * Intelligent voice selection based on story content analysis
- * Analyzes the story type, characters, and mood to recommend appropriate voice
- * @param {string} text - Story text to analyze
- * @returns {string} - Recommended voice ID
- *
- * Available voices from step-tts-mini:
- * Male: cixingnansheng, zhengpaiqingnian, yuanqinansheng, qingniandaxuesheng,
- *       boyinnansheng, ruyananshi, shenchennanyin
- * Female: qinqienvsheng, wenrounvsheng, jilingshaonv, yuanqishaonv,
- *         ruanmengnvsheng, youyanvsheng, lengyanyujie, shuangkuaijiejie,
- *         wenjingxuejie, linjiajiejie, linjiameimei, zhixingjiejie
+ * Extract and clean Cantonese text from story
+ * Removes markdown symbols and extracts only Cantonese portion
+ * @param {string} text - Full story text with Mandarin and Cantonese
+ * @returns {string} - Cleaned Cantonese text only
  */
-function selectIntelligentVoice(text) {
-  // Analysis keywords for story categorization
-  const analysis = {
-    // Refined children's story detection - removed generic "开心" and standalone particles
-    // Only match specific child-related terms and particle combinations
-    isChildrenStory: /小朋友|细路|细路仔|小孩|小孩仔|儿童|兒童|玩耍|玩木块|嘻嘻哈哈|童真|搭积木|搭高塔|细路仔呀|细路仔咧|小孩呀|小孩咯/.test(text),
-
-    // Adult/adolence indicators - if these are present, it's NOT a children's story
-    // Expanded with more professions, vehicles, and adult-related terms
-    hasAdultIndicators: /市民|锻炼|健身|运动|工作|上班|公司|职员|成人|成年人|青年|老人|司机|老板|职员|店员|顾客|街坊|邻居|警察|医生|护士|老师|学生|开车|驾车|骑车|路人|行人|乘客|店主|商贩|员工/.test(text),
-
-    // Warm emotional stories
-    isWarmEmotional: /温暖|温馨|幸福|拥抱|亲人|家人|婆婆|公公|家人团聚|亲情|感动|温馨/.test(text),
-
-    // Educational content
-    isEducational: /学习|學習|读书|睇書|课堂|課堂|学校|學校|知识|知識|教学|教材|学习班|补习/.test(text),
-
-    // Daily life scenes (Hong Kong style) - expanded with street, shop, vehicle scenes
-    isDailyLife: /日常生活|生活|街市|茶餐厅|茶记|饮茶|吃饭|食飯|落雨|收衫|上班|放工|买菜|煮饭|厨房|厨|做饭|烹饪|煮食|家里|屋企|家|家庭|家居|餐厅|饭厅|街道|街边|街市|马路|路|店铺|铺头|商店|商场|购物|逛街|开车|驾车|骑车|坐车|乘车|交通|塞车|堵车|车流/.test(text),
-
-    // Fitness/Sports scenes (NEW)
-    isFitnessSports: /健身|锻炼|运动|跑步|打球|游泳|瑜伽|做运动|体能|训练|操场|体育馆|器材/.test(text),
-
-    // Calm narrative - expanded with more tranquility keywords
-    isCalmNarrative: /静静|靜靜|慢慢|漸漸|轻轻|輕輕|缓缓|緩緩|平静|平靜|安靜|悠闲|悠閒|放松|放鬆|宁静|寧靜|和谐|和諧|舒适|舒適|惬意|享受|安详|安詳/.test(text),
-
-    // Energetic/active content - expanded keywords
-    isEnergetic: /嘻嘻哈哈|哈哈|嘻嘻|热烈|熱烈|热闹|熱鬧|欢快|歡快|跳跃|跳躍|跑|冲|衝|活力|运动|健身|锻炼|充满活力|精神|元气|忙碌|紧张|激烈/.test(text),
-
-    // Protagonist gender detection - expanded with profession titles
-    hasMaleProtagonist: /小明|阿明|哥哥|阿哥|爸爸|公公|先生|男人|男子|男生|小伙子|男孩|男仔|师傅|厨师|父亲|爷爷|叔叔|伯伯/.test(text),
-    hasFemaleProtagonist: /小美|阿美|姐姐|家姐|妹妹|細妹|妈妈|婆婆|女人|女子|女生|女仔|姑娘|女孩|阿婆|母亲|奶奶|阿姨|师姐|师妹/.test(text),
-  };
-
-  // Override: If adult indicators are present, force isChildrenStory to false
-  if (analysis.hasAdultIndicators) {
-    analysis.isChildrenStory = false;
+function extractAndCleanCantoneseText(text) {
+  // Extract only Cantonese text
+  const cantoneseTextMatch = text.match(/\*\*（粤语版）\*\*\s*\n([\s\S]*)/i);
+  if (!cantoneseTextMatch) {
+    console.warn('Cannot find Cantonese text marker, using full text');
+    return text;
   }
 
-  console.log('Story content analysis:', analysis);
+  let cleanCantoneseText = cantoneseTextMatch[1].trim();
 
-  // Decision logic for voice selection
-  let selectedVoice;
+  // Stop at the next major section (###) or language explanation section
+  // AI sometimes adds extra explanations like "语言规范说明"
+  const sections = cleanCantoneseText.split(/\n###\s*/);
+  cleanCantoneseText = sections[0].trim();
 
-  // Priority 1: Children's stories (most specific)
-  if (analysis.isChildrenStory) {
-    if (analysis.hasFemaleProtagonist || text.includes('妹妹') || text.includes('家姐')) {
-      selectedVoice = 'linjiameimei'; // Young girl voice for children's stories
-      console.log('Selected: linjiameimei (children\'s story with female characters)');
-    } else if (analysis.hasMaleProtagonist || text.includes('哥哥') || text.includes('阿哥')) {
-      selectedVoice = 'yuanqinansheng'; // Young boy voice
-      console.log('Selected: yuanqinansheng (children\'s story with male characters)');
-    } else {
-      selectedVoice = 'yuanqishaonv'; // Default youthful female for general children's content
-      console.log('Selected: yuanqishaonv (default children\'s story voice)');
+  // Further clean up - stop at horizontal rules or explanatory headings
+  const lines = cleanCantoneseText.split('\n');
+  const cleanedLines = [];
+  for (const line of lines) {
+    // Stop if we hit explanatory content
+    if (line.match(/^(语言规范|场景描述|说明|注意|希望|如果)/)) {
+      break;
     }
+    cleanedLines.push(line);
   }
-  // Priority 2: Fitness/Sports scenes (NEW)
-  else if (analysis.isFitnessSports) {
-    if (analysis.hasFemaleProtagonist) {
-      selectedVoice = 'jilingshaonv'; // Energetic female for fitness
-      console.log('Selected: jilingshaonv (fitness story with female characters)');
-    } else {
-      selectedVoice = 'zhengpaiqingnian'; // Energetic young male for fitness
-      console.log('Selected: zhengpaiqingnian (fitness story with male/neutral characters)');
-    }
-  }
-  // Priority 3: Warm emotional stories
-  else if (analysis.isWarmEmotional) {
-    if (analysis.hasFemaleProtagonist) {
-      selectedVoice = 'qinqienvsheng'; // Intimate and gentle female
-      console.log('Selected: qinqienvsheng (warm emotional story with female protagonist)');
-    } else {
-      selectedVoice = 'yuanqinansheng'; // Warm male voice
-      console.log('Selected: yuanqinansheng (warm emotional story with male protagonist)');
-    }
-  }
-  // Priority 4: Educational content
-  else if (analysis.isEducational) {
-    if (analysis.hasFemaleProtagonist) {
-      selectedVoice = 'wenjingxuejie'; // Scholarly female student
-      console.log('Selected: wenjingxuejie (educational content with female voice)');
-    } else {
-      selectedVoice = 'boyinnansheng'; // Clear broadcast male
-      console.log('Selected: boyinnansheng (educational content with male voice)');
-    }
-  }
-  // Priority 5: Daily life stories
-  else if (analysis.isDailyLife) {
-    selectedVoice = 'shuangkuaijiejie'; // Cheerful sisterly for daily life
-    console.log('Selected: shuangkuaijiejie (daily life story)');
-  }
-  // Priority 6: Energetic/active content
-  else if (analysis.isEnergetic) {
-    selectedVoice = 'jilingshaonv'; // Smart and lively
-    console.log('Selected: jilingshaonv (energetic story)');
-  }
-  // Priority 7: Calm narrative
-  else if (analysis.isCalmNarrative) {
-    selectedVoice = 'wenrounvsheng'; // Soft and warm
-    console.log('Selected: wenrounvsheng (calm narrative)');
-  }
-  // Default: Protagonist-based selection
-  else {
-    if (analysis.hasFemaleProtagonist) {
-      selectedVoice = 'wenrounvsheng'; // Gentle female default
-      console.log('Selected: wenrounvsheng (default female protagonist)');
-    } else if (analysis.hasMaleProtagonist) {
-      selectedVoice = 'cixingnansheng'; // Magnetic male default
-      console.log('Selected: cixingnansheng (default male protagonist)');
-    } else {
-      selectedVoice = 'wenrounvsheng'; // Overall default
-      console.log('Selected: wenrounvsheng (overall default)');
+  cleanCantoneseText = cleanedLines.join('\n').trim();
+
+  // Remove all markdown formatting symbols
+  cleanCantoneseText = cleanCantoneseText
+    .replace(/\*\*/g, '')  // Remove bold markers
+    .replace(/#{1,6}\s*/g, '')  // Remove headers (### )
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')  // Remove markdown links but keep text
+    .replace(/\[([^\]]+)\]/g, '$1')  // Remove brackets
+    .replace(/^#+\s*/gm, '')  // Remove any remaining markdown headers at line start
+    .replace(/^---+$/gm, '')  // Remove horizontal rules
+    .trim();
+
+  // Limit length for TTS (Tencent Cloud has character limit)
+  if (cleanCantoneseText.length > 200) {
+    // Take first 2-3 sentences
+    const sentences = cleanCantoneseText.split(/[。！？！\n]/);
+    cleanCantoneseText = sentences.slice(0, 3).join('。').trim();
+    if (!cleanCantoneseText.endsWith('。')) {
+      cleanCantoneseText += '。';
     }
   }
 
-  return selectedVoice;
+  return cleanCantoneseText;
 }
 
 /**
- * Call StepFun API to synthesize Cantonese speech from text
- * Uses StepFun's step-tts-2 model with intelligent voice selection
+ * Call Tencent Cloud TTS to synthesize Cantonese speech from text
+ * Uses Tencent Cloud's Text To Voice API with Cantonese voice
  * @param {string} text - Cantonese text to synthesize
- * @param {string} [voiceOverride] - Optional voice ID to override intelligent selection
  * @returns {Promise<Buffer>} - Audio buffer (MP3 format)
  */
-async function synthesizeCantoneseSpeech(text, voiceOverride) {
+async function synthesizeCantoneseSpeechWithTencent(text) {
   try {
-    // Use intelligent voice selection if no override provided
-    const voiceId = voiceOverride || selectIntelligentVoice(text);
+    console.log('Using Tencent Cloud TTS for Cantonese synthesis');
 
-    console.log(`Synthesizing speech with voice: ${voiceId}`);
+    // Extract and clean Cantonese text
+    const cleanCantoneseText = extractAndCleanCantoneseText(text);
+    console.log('Cleaned Cantonese text:', cleanCantoneseText);
 
-    const response = await axios.post(
-      `${process.env.STEPFUN_API_ENDPOINT || 'https://api.stepfun.com/v1'}/audio/speech`,
-      {
-        model: process.env.STEPFUN_MODEL || 'step-tts-2',
-        input: text,
-        voice: voiceId,
-        response_format: 'mp3',
-        speed: 1.0,
-      },
-      {
-        headers: {
-          'Authorization': `Bearer ${process.env.STEPFUN_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        responseType: 'arraybuffer',
-        timeout: 60000,
-      }
-    );
+    // Intelligent voice selection for Cantonese
+    // Analyze story content to determine appropriate voice
+    const analysis = analyzeStoryForVoiceSelection(cleanCantoneseText);
 
-    console.log(`Speech synthesis successful with voice: ${voiceId}`);
-    // Return audio buffer
-    return Buffer.from(response.data);
+    // Select VoiceType based on analysis
+    // Tencent Cloud TTS Cantonese voices:
+    // - 101019: 智彤 - 粤语女声
+    // - 101020: 智伟 - 粤语男声
+    let selectedVoiceType = 101019; // Default: female voice
+
+    if (analysis.hasMaleProtagonist) {
+      selectedVoiceType = 101020; // Male voice for male protagonist
+      console.log('Selected: 智伟 (Cantonese male voice) - story has male protagonist');
+    } else if (analysis.hasFemaleProtagonist || analysis.isChildrenStory) {
+      selectedVoiceType = 101019; // Female voice for female protagonist or children
+      console.log('Selected: 智彤 (Cantonese female voice) - story has female protagonist or is children\'s content');
+    } else {
+      console.log('Selected: 智彤 (Cantonese female voice) - default');
+    }
+
+    const params = {
+      Text: cleanCantoneseText,
+      SessionId: Date.now().toString(),
+      VoiceType: selectedVoiceType,
+      PrimaryLanguage: 1,  // 1 = Chinese
+      SampleRate: 16000,
+      Codec: "mp3",
+      Speed: 1.0,
+      Volume: 5.0,
+    };
+
+    const response = await ttsClient.TextToVoice(params);
+    console.log('Tencent Cloud TTS response:', response);
+
+    if (!response.Audio) {
+      throw new Error('No audio data returned from Tencent Cloud TTS');
+    }
+
+    // Tencent returns base64 encoded audio
+    const audioBuffer = Buffer.from(response.Audio, 'base64');
+    console.log(`Tencent Cloud TTS successful, audio size: ${audioBuffer.length} bytes`);
+
+    return audioBuffer;
 
   } catch (error) {
-    console.error('StepFun API Error:', error.message);
-    if (error.response) {
-      console.error('StepFun API Response:', error.response.data.toString());
-    }
-    throw new Error(`Failed to synthesize speech: ${error.message}`);
+    console.error('Tencent Cloud TTS Error:', error.message);
+    throw new Error(`Failed to synthesize speech with Tencent Cloud: ${error.message}`);
+  }
+}
+
+/**
+ * Analyze story content for intelligent voice selection (Tencent Cloud TTS)
+ * @param {string} text - Cantonese text to analyze
+ * @returns {Object} - Analysis result
+ */
+function analyzeStoryForVoiceSelection(text) {
+  return {
+    isChildrenStory: /小朋友|細路|細路仔|小孩|小孩仔|儿童|兒童|玩耍|玩木块|嘻嘻哈哈|童真|搭积木|搭高塔|細路仔呀|細路仔咧|小孩呀|小孩咯/.test(text),
+    hasMaleProtagonist: /小明|阿明|哥哥|阿哥|爸爸|公公|先生|男人|男子|男生|小伙子|男孩|男仔|师傅|厨师|父亲|爷爷|叔叔|伯伯|老李|阿辉|阿伯|小林/.test(text),
+    hasFemaleProtagonist: /小美|阿美|姐姐|家姐|妹妹|細妹|妈妈|婆婆|女人|女子|女生|女仔|姑娘|女孩|阿婆|母亲|奶奶|阿姨|师姐|师妹/.test(text),
+  };
+}
+
+/**
+ * Call Tencent Cloud TTS to synthesize Cantonese speech from text
+ * Uses Tencent Cloud's intelligent voice selection with VoiceType 101019 (Cantonese)
+ * @param {string} text - Cantonese text to synthesize
+ * @returns {Promise<Buffer>} - Audio buffer (MP3 format)
+ */
+async function synthesizeCantoneseSpeech(text) {
+  try {
+    return await synthesizeCantoneseSpeechWithTencent(text);
+  } catch (error) {
+    console.error('Tencent Cloud TTS Error:', error.message);
+    throw new Error(`Failed to synthesize speech with Tencent Cloud: ${error.message}`);
   }
 }
 
@@ -423,8 +465,6 @@ async function synthesizeCantoneseSpeech(text, voiceOverride) {
  */
 async function recognizeCantoneseSpeech(audioBuffer) {
   try {
-    const model = process.env.WHISPER_MODEL || 'openai/whisper-large-v3';
-
     // Create form data with audio file
     const FormData = require('form-data');
     const form = new FormData();
@@ -435,14 +475,14 @@ async function recognizeCantoneseSpeech(audioBuffer) {
       contentType: 'audio/mp3',
     });
 
-    // Append parameters
-    form.append('model', model);
-    form.append('language', 'zh'); // Chinese (will handle both Mandarin and Cantonese)
-    form.append('response_format', 'verbose_json'); // Get detailed response with timestamps
+    // Note: Model is now specified in the URL, not as a parameter
+    // form.append('language', 'zh'); // Optional: language parameter (Whisper auto-detects)
+    // form.append('response_format', 'verbose_json'); // Not needed - default response includes segments
 
     // Call DeepInfra's Whisper REST API
+    // 2025-02-07: Fixed endpoint from /v1/openai/whisper (404) to /v1/inference/openai/whisper-large-v3
     const response = await axios.post(
-      `https://api.deepinfra.com/v1/openai/whisper`,
+      `https://api.deepinfra.com/v1/inference/openai/whisper-large-v3`,
       form,
       {
         headers: {
@@ -555,10 +595,10 @@ app.post('/api/generate', upload.single('image'), async (req, res) => {
 
     console.log('Processing image:', req.file.originalname);
 
-    // Step 1: Generate Cantonese story from image
+    // Step 1: Generate bilingual story from image (Mandarin + Cantonese)
     let cantoneseText;
     try {
-      cantoneseText = await generateCantoneseText(req.file.buffer);
+      cantoneseText = await generateBilingualText(req.file.buffer);
       console.log('Generated story:', cantoneseText);
     } catch (primaryError) {
       console.warn('Primary generation failed, attempting fallback...', primaryError.message);
@@ -571,7 +611,7 @@ app.post('/api/generate', upload.single('image'), async (req, res) => {
       }
     }
 
-    // Step 2: Synthesize speech from Cantonese text
+    // Step 2: Synthesize speech from Cantonese text (only the Cantonese part)
     const audioBuffer = await synthesizeCantoneseSpeech(cantoneseText);
     console.log('Synthesized audio size:', audioBuffer.length, 'bytes');
 
@@ -694,9 +734,9 @@ app.listen(PORT, () => {
 ╚════════════════════════════════════════════════════════════╝
 
 ✅ APIs configured:
-   - DeepInfra Vision (Qwen2.5-VL-32B-Instruct)
-   - StepFun TTS (step-tts-2)
-   - DeepInfra Whisper (whisper-large-v3)
+   - DeepInfra Vision (Qwen2.5-VL-32B-Instruct) - 图像识别
+   - Tencent Cloud TTS (粤语) - 语音合成
+   - DeepInfra Whisper (whisper-large-v3) - 语音识别
 
 ⚠️  Make sure all required environment variables are set!
 `);
