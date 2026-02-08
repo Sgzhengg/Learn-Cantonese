@@ -10,6 +10,7 @@ const Levenshtein = require('levenshtein');
 const OpenAI = require('openai');
 const crypto = require('crypto');
 const tencentcloud = require("tencentcloud-sdk-nodejs");
+const { Pool } = require('pg'); // PostgreSQL client
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -17,6 +18,24 @@ const PORT = process.env.PORT || 3000;
 // Middleware
 app.use(cors());
 app.use(express.json());
+
+// ============== POSTGRESQL DATABASE CONNECTION ==============
+let pool = null;
+
+// Initialize PostgreSQL connection if DATABASE_URL is provided
+if (process.env.DATABASE_URL) {
+  pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : false
+  });
+
+  // Test connection
+  pool.connect()
+    .then(() => console.log('✅ PostgreSQL connected successfully'))
+    .catch(err => console.error('❌ PostgreSQL connection error:', err));
+} else {
+  console.log('⚠️  No DATABASE_URL provided, using in-memory storage');
+}
 
 // Configure multer for file uploads
 const storage = multer.memoryStorage();
@@ -56,14 +75,643 @@ const clientConfig = {
 };
 const ttsClient = new TtsClient(clientConfig);
 
+// ============== USER CANTONESE LEVEL ENUM ==============
+const CANTONESE_LEVELS = {
+  BEGINNER: {
+    id: 'beginner',
+    name: '初级',
+    nameEn: 'Beginner',
+    description: '粤语学习初学者',
+    storyLength: '2句话',
+    vocabulary: '简单日常词汇',
+    difficulty: 'easy'
+  },
+  INTERMEDIATE: {
+    id: 'intermediate',
+    name: '中级',
+    nameEn: 'Intermediate',
+    description: '有一定粤语基础',
+    storyLength: '3-4句话',
+    vocabulary: '日常对话词汇',
+    difficulty: 'medium'
+  },
+  ADVANCED: {
+    id: 'advanced',
+    name: '高级',
+    nameEn: 'Advanced',
+    description: '粤语流利者',
+    storyLength: '4-5句话',
+    vocabulary: '丰富表达和地道口语',
+    difficulty: 'hard'
+  }
+};
+
+// ============== DATABASE SCHEMA & STORAGE ==============
+// Fallback to in-memory storage if database is not available
+const userRecords = new Map();
+const shareRecords = new Map();
+const userStats = new Map();
+const userAchievements = new Map();
+const userProfiles = new Map(); // userId -> { cantoneseLevel, preferences }
+
+/**
+ * Initialize database tables
+ */
+async function initializeDatabase() {
+  if (!pool) {
+    console.log('⚠️  Skipping database initialization (no connection)');
+    return;
+  }
+
+  const createTables = `
+    -- User profiles table
+    CREATE TABLE IF NOT EXISTS user_profiles (
+      user_id VARCHAR(255) PRIMARY KEY,
+      cantonese_level VARCHAR(50) DEFAULT 'beginner',
+      preferences JSONB DEFAULT '{}',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Learning records table
+    CREATE TABLE IF NOT EXISTS learning_records (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id VARCHAR(255) NOT NULL,
+      mandarin TEXT NOT NULL,
+      cantonese TEXT NOT NULL,
+      cantonese_words JSONB,
+      audio_url TEXT,
+      image_url TEXT,
+      timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_user_timestamp (user_id, timestamp DESC)
+    );
+
+    -- Share records table
+    CREATE TABLE IF NOT EXISTS share_records (
+      share_id VARCHAR(20) PRIMARY KEY,
+      mandarin TEXT NOT NULL,
+      cantonese TEXT NOT NULL,
+      cantonese_words JSONB,
+      image_url TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      expires_at TIMESTAMP NOT NULL
+    );
+
+    -- User statistics table
+    CREATE TABLE IF NOT EXISTS user_statistics (
+      user_id VARCHAR(255) PRIMARY KEY,
+      total_stories INTEGER DEFAULT 0,
+      practice_count INTEGER DEFAULT 0,
+      best_score INTEGER DEFAULT 0,
+      total_score INTEGER DEFAULT 0,
+      total_study_time INTEGER DEFAULT 0,
+      last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- User achievements table
+    CREATE TABLE IF NOT EXISTS user_achievements (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id VARCHAR(255) NOT NULL,
+      achievement_id VARCHAR(50) NOT NULL,
+      unlocked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (user_id, achievement_id),
+      INDEX idx_user_achievements (user_id)
+    );
+  `;
+
+  try {
+    await pool.query(createTables);
+    console.log('✅ Database tables initialized successfully');
+  } catch (error) {
+    console.error('❌ Database initialization error:', error);
+  }
+}
+
+// Initialize tables on startup
+initializeDatabase();
+
+// Achievement definitions
+const ACHIEVEMENTS = {
+  first_story: {
+    id: 'first_story',
+    title: '初出茅庐',
+    description: '完成第一个粤语故事',
+    icon: 'star',
+    condition: (stats) => stats.totalStories >= 1
+  },
+  ten_stories: {
+    title: '勤学苦练',
+    description: '学习了10个粤语故事',
+    icon: 'school',
+    condition: (stats) => stats.totalStories >= 10
+  },
+  fifty_stories: {
+    id: 'fifty_stories',
+    title: '粤语达人',
+    description: '学习了50个粤语故事',
+    icon: 'emoji_events',
+    condition: (stats) => stats.totalStories >= 50
+  },
+  practice_master: {
+    id: 'practice_master',
+    title: '跟读高手',
+    description: '跟读练习达到100次',
+    icon: 'record_voice_over',
+    condition: (stats) => stats.practiceCount >= 100
+  },
+  perfect_score: {
+    id: 'perfect_score',
+    title: '完美发音',
+    description: '获得一次满分评价',
+    icon: 'verified',
+    condition: (stats) => stats.bestScore === 100
+  },
+  excellent_student: {
+    id: 'excellent_student',
+    title: '优秀学员',
+    description: '平均分达到90分',
+    icon: 'workspace_premium',
+    condition: (stats) => stats.averageScore && stats.averageScore >= 90
+  }
+};
+
+/**
+ * Generate a unique ID
+ * @returns {string} - Unique ID
+ */
+function generateId() {
+  return crypto.randomBytes(16).toString('hex');
+}
+
+/**
+ * Save a learning record
+ * @param {string} userId - User identifier (can be device ID, session ID, etc.)
+ * @param {object} data - Record data
+ * @returns {object} - Saved record with ID
+ */
+function saveRecord(userId, data) {
+  const recordId = generateId();
+  const record = {
+    id: recordId,
+    userId: userId,
+    timestamp: new Date().toISOString(),
+    ...data
+  };
+
+  // Initialize user's records array if not exists
+  if (!userRecords.has(userId)) {
+    userRecords.set(userId, []);
+  }
+
+  // Add record to user's history
+  userRecords.get(userId).unshift(record); // Add to beginning (newest first)
+
+  // Keep only last 100 records per user
+  const records = userRecords.get(userId);
+  if (records.length > 100) {
+    records.pop(); // Remove oldest
+  }
+
+  console.log(`Record saved: ${recordId} for user: ${userId}`);
+  return record;
+}
+
+/**
+ * Get user's history records
+ * @param {string} userId - User identifier
+ * @param {number} limit - Maximum number of records to return
+ * @returns {Array} - Array of records
+ */
+function getUserHistory(userId, limit = 20) {
+  const records = userRecords.get(userId) || [];
+  return records.slice(0, limit);
+}
+
+/**
+ * Delete a specific record
+ * @param {string} userId - User identifier
+ * @param {string} recordId - Record ID
+ * @returns {boolean} - Success status
+ */
+function deleteRecord(userId, recordId) {
+  const records = userRecords.get(userId);
+  if (!records) return false;
+
+  const index = records.findIndex(r => r.id === recordId);
+  if (index === -1) return false;
+
+  records.splice(index, 1);
+  console.log(`Record deleted: ${recordId} for user: ${userId}`);
+  return true;
+}
+
+/**
+ * Create a shareable record
+ * @param {object} data - Data to share
+ * @returns {object} - Share record with share ID
+ */
+function createShareRecord(data) {
+  const shareId = generateId().substring(0, 8); // Shorter ID for sharing
+  const shareRecord = {
+    shareId: shareId,
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(), // 30 days
+    ...data
+  };
+
+  shareRecords.set(shareId, shareRecord);
+  console.log(`Share record created: ${shareId}`);
+  return shareRecord;
+}
+
+/**
+ * Get share record by ID
+ * @param {string} shareId - Share ID
+ * @returns {object|null} - Share record or null if not found/expired
+ */
+function getShareRecord(shareId) {
+  const record = shareRecords.get(shareId);
+  if (!record) return null;
+
+  // Check if expired
+  if (new Date(record.expiresAt) < new Date()) {
+    shareRecords.delete(shareId);
+    return null;
+  }
+
+  return record;
+}
+
+/**
+ * Get or initialize user statistics
+ * @param {string} userId - User identifier
+ * @returns {object} - User statistics
+ */
+function getUserStats(userId) {
+  if (!userStats.has(userId)) {
+    userStats.set(userId, {
+      totalStories: 0,
+      practiceCount: 0,
+      bestScore: 0,
+      totalScore: 0,
+      totalStudyTime: 0, // in minutes
+      lastUpdated: new Date().toISOString()
+    });
+  }
+  return userStats.get(userId);
+}
+
+/**
+ * Update user statistics after completing a story
+ * @param {string} userId - User identifier
+ * @param {object} data - Update data { score?, practiceTime?, isPractice? }
+ */
+function updateUserStats(userId, data = {}) {
+  const stats = getUserStats(userId);
+
+  if (data.isPractice) {
+    stats.practiceCount += 1;
+    if (data.score !== undefined) {
+      stats.totalScore += data.score;
+      stats.bestScore = Math.max(stats.bestScore, data.score);
+    }
+  } else {
+    stats.totalStories += 1;
+  }
+
+  if (data.practiceTime) {
+    stats.totalStudyTime += data.practiceTime;
+  }
+
+  stats.lastUpdated = new Date().toISOString();
+
+  // Check for new achievements
+  checkAndUnlockAchievements(userId, stats);
+
+  return stats;
+}
+
+/**
+ * Check and unlock achievements based on user stats
+ * @param {string} userId - User identifier
+ * @param {object} stats - User statistics
+ */
+function checkAndUnlockAchievements(userId, stats) {
+  if (!userAchievements.has(userId)) {
+    userAchievements.set(userId, []);
+  }
+
+  const unlocked = userAchievements.get(userId);
+  const statsWithAverage = {
+    ...stats,
+    averageScore: stats.practiceCount > 0 ? Math.round(stats.totalScore / stats.practiceCount) : 0
+  };
+
+  // Check each achievement
+  for (const [key, achievement] of Object.entries(ACHIEVEMENTS)) {
+    if (!unlocked.find(a => a.id === achievement.id)) {
+      if (achievement.condition(statsWithAverage)) {
+        unlocked.push({
+          ...achievement,
+          unlockedAt: new Date().toISOString()
+        });
+        console.log(`Achievement unlocked: ${achievement.title} for user: ${userId}`);
+      }
+    }
+  }
+}
+
+/**
+ * Get user achievements
+ * @param {string} userId - User identifier
+ * @returns {Array} - Array of unlocked achievements
+ */
+function getUserAchievements(userId) {
+  if (!userAchievements.has(userId)) {
+    return [];
+  }
+
+  const unlocked = userAchievements.get(userId);
+  const unlockedIds = new Set(unlocked.map(a => a.id));
+
+  // Return all achievements with unlock status
+  return Object.values(ACHIEVEMENTS).map(achievement => ({
+    ...achievement,
+    unlocked: unlockedIds.has(achievement.id),
+    unlockedAt: unlocked.find(a => a.id === achievement.id)?.unlockedAt || null
+  }));
+}
+
+/**
+ * ============== USER PROFILE & CANTONESE LEVEL ==============
+ */
+
+/**
+ * Get or create user profile
+ * @param {string} userId - User identifier
+ * @returns {Promise<object>} - User profile
+ */
+async function getUserProfile(userId) {
+  if (pool) {
+    // Use database
+    try {
+      const result = await pool.query(
+        'SELECT * FROM user_profiles WHERE user_id = $1',
+        [userId]
+      );
+
+      if (result.rows.length > 0) {
+        return result.rows[0];
+      }
+
+      // Create new profile
+      const newProfile = await pool.query(
+        `INSERT INTO user_profiles (user_id, cantonese_level, preferences)
+         VALUES ($1, $2, $3)
+         RETURNING *`,
+        [userId, 'beginner', '{}']
+      );
+
+      return newProfile.rows[0];
+    } catch (error) {
+      console.error('Database error in getUserProfile:', error);
+      // Fall through to in-memory storage
+    }
+  }
+
+  // Fallback to in-memory storage
+  if (!userProfiles.has(userId)) {
+    userProfiles.set(userId, {
+      userId: userId,
+      cantoneseLevel: 'beginner',
+      preferences: {}
+    });
+  }
+  return userProfiles.get(userId);
+}
+
+/**
+ * Update user's Cantonese level
+ * @param {string} userId - User identifier
+ * @param {string} level - Cantonese level (beginner, intermediate, advanced)
+ * @returns {Promise<object>} - Updated profile
+ */
+async function updateUserCantoneseLevel(userId, level) {
+  if (!CANTONESE_LEVELS[level.toUpperCase()]) {
+    throw new Error(`Invalid cantonese level: ${level}`);
+  }
+
+  if (pool) {
+    try {
+      const result = await pool.query(
+        `UPDATE user_profiles
+         SET cantonese_level = $1, updated_at = CURRENT_TIMESTAMP
+         WHERE user_id = $2
+         RETURNING *`,
+        [level, userId]
+      );
+      return result.rows[0];
+    } catch (error) {
+      console.error('Database error in updateUserCantoneseLevel:', error);
+    }
+  }
+
+  // Fallback to in-memory storage
+  const profile = userProfiles.get(userId) || { userId, preferences: {} };
+  profile.cantoneseLevel = level;
+  userProfiles.set(userId, profile);
+  return profile;
+}
+
+/**
+ * Get story generation prompt based on user's Cantonese level
+ * @param {string} level - Cantonese level
+ * @returns {object} - Prompt configuration
+ */
+function getLevelPromptConfig(level) {
+  const configs = {
+    beginner: {
+      mandarinLength: '2句话',
+      cantoneseLength: '2句话',
+      vocabulary: '简单日常词汇，如：呢度、嗰度、我、你、食饭、饮水、瞓觉',
+      examples: '这里有一杯水，呢度有个苹果',
+      tone: '简单、易懂'
+    },
+    intermediate: {
+      mandarinLength: '3句话',
+      cantoneseLength: '3句话',
+      vocabulary: '日常对话词汇，如：但其实、就算、Anyway、几好、唔错',
+      examples: '我今日去咗街市买餸，点知好巧遇到旧同学',
+      tone: '自然、流畅'
+    },
+    advanced: {
+      mandarinLength: '4句话',
+      cantoneseLength: '4-5句话',
+      vocabulary: '地道口语表达，如：鬼咁、唔使客气、正一、冇问题、梗系',
+      examples: '今日去茶楼饮早茶，啲虾饺烧卖真系一流，虽然人多咗但都值得等',
+      tone: '地道、生活化'
+    }
+  };
+
+  return configs[level] || configs.beginner;
+}
+
+// ============== DATABASE STORAGE OPERATIONS ==============
+
+/**
+ * Database-aware save record function
+ * @param {string} userId - User identifier
+ * @param {object} data - Record data
+ * @returns {Promise<object>} - Saved record
+ */
+async function saveRecord(userId, data) {
+  const recordId = generateId();
+  const record = {
+    id: recordId,
+    userId: userId,
+    timestamp: new Date().toISOString(),
+    ...data
+  };
+
+  if (pool) {
+    try {
+      const result = await pool.query(
+        `INSERT INTO learning_records
+         (user_id, mandarin, cantonese, cantonese_words, audio_url, image_url)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id, timestamp`,
+        [userId, data.mandarin, data.cantonese,
+         JSON.stringify(data.cantoneseWords || []),
+         data.audioUrl, data.imageUrl]
+      );
+      record.id = result.rows[0].id;
+      record.timestamp = result.rows[0].timestamp;
+    } catch (error) {
+      console.error('Database save error:', error);
+      // Fall through to in-memory storage
+    }
+  }
+
+  // In-memory fallback
+  if (!userRecords.has(userId)) {
+    userRecords.set(userId, []);
+  }
+  userRecords.get(userId).unshift(record);
+  const records = userRecords.get(userId);
+  if (records.length > 100) records.pop();
+
+  console.log(`Record saved: ${recordId} for user: ${userId}`);
+  return record;
+}
+
+/**
+ * Database-aware get user history function
+ * @param {string} userId - User identifier
+ * @param {number} limit - Maximum records
+ * @returns {Promise<Array>} - Records
+ */
+async function getUserHistory(userId, limit = 20) {
+  if (pool) {
+    try {
+      const result = await pool.query(
+        `SELECT id, user_id, mandarin, cantonese,
+         cantonese_words as "cantoneseWords",
+         audio_url as "audioUrl", image_url as "imageUrl", timestamp
+         FROM learning_records
+         WHERE user_id = $1
+         ORDER BY timestamp DESC
+         LIMIT $2`,
+        [userId, limit]
+      );
+      return result.rows;
+    } catch (error) {
+      console.error('Database get history error:', error);
+    }
+  }
+
+  // In-memory fallback
+  const records = userRecords.get(userId) || [];
+  return records.slice(0, limit);
+}
+
+/**
+ * Database-aware delete record function
+ * @param {string} userId - User identifier
+ * @param {string} recordId - Record ID
+ * @returns {Promise<boolean>} - Success
+ */
+async function deleteRecord(userId, recordId) {
+  if (pool) {
+    try {
+      const result = await pool.query(
+        `DELETE FROM learning_records
+         WHERE id = $1 AND user_id = $2
+         RETURNING id`,
+        [recordId, userId]
+      );
+      if (result.rows.length > 0) {
+        console.log(`Record deleted: ${recordId} for user: ${userId}`);
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.error('Database delete error:', error);
+    }
+  }
+
+  // In-memory fallback
+  const records = userRecords.get(userId);
+  if (!records) return false;
+  const index = records.findIndex(r => r.id === recordId);
+  if (index === -1) return false;
+  records.splice(index, 1);
+  console.log(`Record deleted: ${recordId} for user: ${userId}`);
+  return true;
+}
+
+/**
+ * Database-aware get user stats function
+ * @param {string} userId - User identifier
+ * @returns {Promise<object>} - User statistics
+ */
+async function getUserStatsDb(userId) {
+  if (pool) {
+    try {
+      const result = await pool.query(
+        'SELECT * FROM user_statistics WHERE user_id = $1',
+        [userId]
+      );
+
+      if (result.rows.length > 0) {
+        return result.rows[0];
+      }
+
+      // Create new stats
+      const newStats = await pool.query(
+        `INSERT INTO user_statistics (user_id)
+         VALUES ($1)
+         RETURNING *`,
+        [userId]
+      );
+      return newStats.rows[0];
+    } catch (error) {
+      console.error('Database get stats error:', error);
+    }
+  }
+
+  // In-memory fallback
+  return getUserStats(userId);
+}
+
 // ============== DEEPINFRA API (Image to Cantonese Text) ==============
 
 /**
  * Call DeepInfra to generate Mandarin description from image
  * @param {Buffer} imageBuffer - Image file buffer
+ * @param {string} level - User's Cantonese level (beginner, intermediate, advanced)
  * @returns {Promise<string>} - Mandarin text description
  */
-async function generateMandarinText(imageBuffer) {
+async function generateMandarinText(imageBuffer, level = 'beginner') {
   try {
     const client = new OpenAI({
       apiKey: process.env.DEEPINFRA_API_KEY,
@@ -71,6 +719,7 @@ async function generateMandarinText(imageBuffer) {
     });
 
     const base64Image = imageBuffer.toString('base64');
+    const config = getLevelPromptConfig(level);
 
     const response = await client.chat.completions.create({
       model: 'Qwen/Qwen2.5-VL-32B-Instruct',
@@ -86,19 +735,20 @@ async function generateMandarinText(imageBuffer) {
             },
             {
               type: 'text',
-              text: `请用标准普通话书面语描述这张照片的内容（2-3句话）。
+              text: `请用标准普通话书面语描述这张照片的内容（${config.mandarinLength}）。
 
 要求：
 - 使用标准普通话书面语，类似新闻联播风格
 - 使用标准词汇：这里、这个、他们、什么、怎么、戴着、坐着、房间、里面、墙、门、窗户
 - 不要使用粤语词汇
+- 语言风格：${config.tone}
 
 只输出描述文本，不要添加其他内容。`,
             },
           ],
         },
       ],
-      max_tokens: 200,
+      max_tokens: level === 'advanced' ? 400 : 250,
       temperature: 0.3,
     });
 
@@ -117,43 +767,59 @@ async function generateMandarinText(imageBuffer) {
 }
 
 /**
- * Translate Mandarin text to Cantonese
+ * Translate Mandarin text to Cantonese with Jyutping romanization
  * @param {string} mandarinText - Mandarin text to translate
- * @returns {Promise<string>} - Cantonese translation
+ * @param {string} level - User's Cantonese level (beginner, intermediate, advanced)
+ * @returns {Promise<{cantonese: string, pinyin: string}>} - Cantonese translation with pinyin
  */
-async function translateToCantonese(mandarinText) {
+async function translateToCantoneseWithPinyin(mandarinText, level = 'beginner') {
   try {
     const client = new OpenAI({
       apiKey: process.env.DEEPINFRA_API_KEY,
       baseURL: 'https://api.deepinfra.com/v1/openai',
     });
 
+    const config = getLevelPromptConfig(level);
+
     const response = await client.chat.completions.create({
       model: 'Qwen/Qwen2.5-VL-32B-Instruct',
       messages: [
         {
           role: 'user',
-          content: `请将以下普通话文本翻译成地道粤语口语：
+          content: `请将以下普通话文本翻译成地道粤语口语，并为每个粤语字标注耶鲁拼音（Jyutping）。
 
 ${mandarinText}
 
 要求：
-- 使用地道粤语口语词汇：呢度、嗰个、佢哋、乜嘢、点解、戴住、坐喺、房间、入面、牆、門、窗
-- 保持原意不变，只是把普通话换成地道粤语说法
-- 只输出翻译结果，不要添加其他内容`,
+1. 粤语翻译长度：${config.cantoneseLength}
+2. 词汇难度：${config.vocabulary}
+3. 保持原意不变，只是把普通话换成地道粤语说法
+4. 为每个粤语字标注耶鲁拼音，格式：字(拼音)，如：我(ngóh)、喺(hái)
+5. 语言风格：${config.tone}
+6. 只输出带拼音的粤语翻译，不要输出普通话原文
+
+输出格式示例：
+我(ngóh)喺(hái)街(gaai)度(dou)饮(yám)奶(naaih)茶(chàh)
+
+请输出：`,
         },
       ],
-      max_tokens: 200,
+      max_tokens: level === 'advanced' ? 500 : 350,
       temperature: 0.3,
     });
 
-    const cantoneseText = response.choices[0]?.message?.content?.trim();
+    const cantoneseWithPinyin = response.choices[0]?.message?.content?.trim();
 
-    if (!cantoneseText) {
+    if (!cantoneseWithPinyin) {
       throw new Error('Empty response from DeepInfra API');
     }
 
-    return cantoneseText;
+    console.log('Cantonese with pinyin:', cantoneseWithPinyin);
+
+    // Parse the response to separate cantonese text and pinyin
+    const parsed = parseCantoneseWithPinyin(cantoneseWithPinyin);
+
+    return parsed;
 
   } catch (error) {
     console.error('DeepInfra API Error (Cantonese):', error.message);
@@ -162,31 +828,65 @@ ${mandarinText}
 }
 
 /**
- * Generate both Mandarin and Cantonese text from image
+ * Parse Cantonese text with pinyin annotations
+ * Extracts pure Cantonese text and creates structured data with pinyin
+ * @param {string} textWithPinyin - Text in format like "我(ngóh)喺(hái)街(gaai)"
+ * @returns {{cantonese: string, words: Array<{char: string, pinyin: string}>}}
+ */
+function parseCantoneseWithPinyin(textWithPinyin) {
+  const words = [];
+  let cantoneseText = '';
+
+  // Match pattern: 字(拼音) or standalone characters
+  const regex = /([^\s()]+)\(([^)]+)\)|([^\s()]+)/g;
+  let match;
+
+  while ((match = regex.exec(textWithPinyin)) !== null) {
+    if (match[1] && match[2]) {
+      // Matched: 字(拼音)
+      words.push({ char: match[1], pinyin: match[2] });
+      cantoneseText += match[1];
+    } else if (match[3]) {
+      // Standalone character without pinyin
+      words.push({ char: match[3], pinyin: '' });
+      cantoneseText += match[3];
+    }
+  }
+
+  return {
+    cantonese: cantoneseText,
+    words: words,
+    pinyin: textWithPinyin // Keep original format for reference
+  };
+}
+
+/**
+ * Generate both Mandarin and Cantonese text from image with pinyin
  * Uses two separate AI calls for better accuracy
  * @param {Buffer} imageBuffer - Image file buffer
- * @returns {Promise<{mandarin: string, cantonese: string}>} - Both texts
+ * @param {string} level - User's Cantonese level (beginner, intermediate, advanced)
+ * @returns {Promise<{mandarin: string, cantonese: string, cantoneseWords: Array}>} - Structured bilingual text
  */
-async function generateBilingualText(imageBuffer) {
+async function generateBilingualText(imageBuffer, level = 'beginner') {
   try {
     // Step 1: Generate Mandarin description
     console.log('Generating Mandarin text...');
-    const mandarinText = await generateMandarinText(imageBuffer);
+    const mandarinText = await generateMandarinText(imageBuffer, level);
     console.log('Mandarin text generated:', mandarinText.substring(0, 50) + '...');
 
-    // Step 2: Translate to Cantonese
-    console.log('Translating to Cantonese...');
-    const cantoneseText = await translateToCantonese(mandarinText);
-    console.log('Cantonese text generated:', cantoneseText.substring(0, 50) + '...');
+    // Step 2: Translate to Cantonese with pinyin
+    console.log('Translating to Cantonese with pinyin...');
+    const cantoneseData = await translateToCantoneseWithPinyin(mandarinText, level);
+    console.log('Cantonese text generated:', cantoneseData.cantonese.substring(0, 50) + '...');
 
-    // Combine in the required format
-    const combinedText = `**（普通话版）**
-${mandarinText}
-
-**（粤语版）**
-${cantoneseText}`;
-
-    return combinedText;
+    // Return structured data
+    return {
+      mandarin: mandarinText,
+      cantonese: cantoneseData.cantonese,
+      cantoneseWords: cantoneseData.words,
+      // Legacy format for backward compatibility
+      combinedText: `**（普通话版）**\n${mandarinText}\n\n**（粤语版）**\n${cantoneseData.cantonese}`
+    };
 
   } catch (error) {
     console.error('Bilingual text generation error:', error.message);
@@ -535,7 +1235,7 @@ async function recognizeCantoneseSpeech(audioBuffer) {
  * @param {string} originalText - Original Cantonese text
  * @param {string} userText - User's recognized speech text
  * @param {number} confidence - ASR confidence score (0-1)
- * @returns {Object} - Score breakdown
+ * @returns {Object} - Score breakdown with encouragement messages
  */
 function calculatePronunciationScore(originalText, userText, confidence) {
   // Normalize texts for comparison
@@ -550,8 +1250,13 @@ function calculatePronunciationScore(originalText, userText, confidence) {
   const similarity = 1 - (distance / maxLen);
 
   // Calculate comprehensive score
-  // 70% weight on text similarity, 30% on ASR confidence
-  const score = Math.round((similarity * 0.7 + confidence * 0.3) * 100);
+  // 60% weight on text similarity, 25% on ASR confidence, 15% on tone accuracy
+  const similarityScore = similarity * 100;
+  const confidenceScore = confidence * 100;
+  // Estimate tone accuracy based on how well they matched (simplified approach)
+  const toneAccuracy = Math.min(100, Math.max(60, similarityScore * 0.9 + confidenceScore * 0.1));
+
+  const score = Math.round(similarityScore * 0.6 + confidenceScore * 0.25 + toneAccuracy * 0.15);
 
   // Determine accuracy level
   let accuracy = 'Poor';
@@ -559,14 +1264,39 @@ function calculatePronunciationScore(originalText, userText, confidence) {
   else if (score >= 75) accuracy = 'Good';
   else if (score >= 60) accuracy = 'Fair';
 
-  // Estimate fluency based on score
-  const fluency = Math.min(100, Math.round(score * 0.9 + 10));
+  // Estimate fluency based on score and confidence
+  const fluency = Math.min(100, Math.round((score * 0.7 + confidenceScore * 0.3) * 0.95 + 5));
+
+  // Generate encouragement messages based on score
+  let title, message;
+  if (score >= 90) {
+    title = '好犀利！(太棒了)';
+    message = '发音非常自然，继续保持。';
+  } else if (score >= 80) {
+    title = '唔错喔！(很好)';
+    message = '发音很标准，再接再厉！';
+  } else if (score >= 70) {
+    title = '过得去！(还可以)';
+    message = '有些地方需要练习，加油！';
+  } else if (score >= 60) {
+    title = '继续努力！(再努力)';
+    message = '多听多说，一定会有进步！';
+  } else {
+    title = '重新嚟过！(再试试)';
+    message = '不要气馁，多练习几次！';
+  }
 
   return {
     score: Math.max(0, Math.min(100, score)),
     accuracy,
     fluency,
+    toneAccuracy: Math.round(toneAccuracy),
     similarity: Math.round(similarity * 100),
+    confidence: Math.round(confidence * 100),
+    encouragement: {
+      title,
+      message,
+    },
   };
 }
 
@@ -581,7 +1311,8 @@ app.get('/health', (req, res) => {
 
 /**
  * POST /api/generate
- * Generate Cantonese text and speech from uploaded image
+ * Generate Cantonese text with pinyin and speech from uploaded image
+ * Supports user-specific Cantonese level for difficulty adjustment
  */
 app.post('/api/generate', upload.single('image'), async (req, res) => {
   try {
@@ -593,18 +1324,44 @@ app.post('/api/generate', upload.single('image'), async (req, res) => {
       });
     }
 
+    const { userId } = req.body;
     console.log('Processing image:', req.file.originalname);
 
-    // Step 1: Generate bilingual story from image (Mandarin + Cantonese)
-    let cantoneseText;
+    // Get user's Cantonese level if userId is provided
+    let userLevel = 'beginner'; // Default level
+    if (userId) {
+      try {
+        const profile = await getUserProfile(userId);
+        userLevel = profile.cantonese_level || 'beginner';
+        console.log(`User level: ${userLevel}`);
+      } catch (error) {
+        console.warn('Failed to get user profile, using default level:', error.message);
+      }
+    }
+
+    // Step 1: Generate bilingual story from image (Mandarin + Cantonese with pinyin)
+    // Generate based on user's Cantonese level
+    let bilingualData;
     try {
-      cantoneseText = await generateBilingualText(req.file.buffer);
-      console.log('Generated story:', cantoneseText);
+      bilingualData = await generateBilingualText(req.file.buffer, userLevel);
+      console.log('Generated story:', bilingualData.cantonese.substring(0, 50) + '...');
     } catch (primaryError) {
       console.warn('Primary generation failed, attempting fallback...', primaryError.message);
       try {
-        cantoneseText = await generateCantoneseStoryWithFallback(req.file.buffer);
+        // Fallback returns old format text, we need to handle it
+        const fallbackText = await generateCantoneseStoryWithFallback(req.file.buffer);
         console.log('Fallback generation succeeded');
+
+        // Parse fallback text to extract mandarin and cantonese
+        const mandarinMatch = fallbackText.match(/\*\*（普通话版）\*\*\s*\n([\s\S]*?)\n\n\*\*（粤语版）\*\*/);
+        const cantoneseMatch = fallbackText.match(/\*\*（粤语版）\*\*\s*\n([\s\S]*)/);
+
+        bilingualData = {
+          mandarin: mandarinMatch ? mandarinMatch[1].trim() : '',
+          cantonese: cantoneseMatch ? cantoneseMatch[1].trim() : fallbackText,
+          cantoneseWords: [], // Fallback doesn't include pinyin
+          combinedText: fallbackText
+        };
       } catch (fallbackError) {
         console.error('Both primary and fallback generation failed:', fallbackError.message);
         throw new Error(`Failed to generate Cantonese story: ${primaryError.message}. Fallback also failed: ${fallbackError.message}`);
@@ -612,21 +1369,29 @@ app.post('/api/generate', upload.single('image'), async (req, res) => {
     }
 
     // Step 2: Synthesize speech from Cantonese text (only the Cantonese part)
-    const audioBuffer = await synthesizeCantoneseSpeech(cantoneseText);
+    const audioBuffer = await synthesizeCantoneseSpeech(bilingualData.cantonese);
     console.log('Synthesized audio size:', audioBuffer.length, 'bytes');
 
     // Step 3: Convert audio to base64 for client
     const audioBase64 = audioBuffer.toString('base64');
     const audioUrl = `data:audio/mp3;base64,${audioBase64}`;
 
-    // Return success response
+    // Return success response with new structured format
     res.json({
       success: true,
       data: {
-        text: cantoneseText,
+        // New structured format
+        mandarin: bilingualData.mandarin,
+        cantonese: bilingualData.cantonese,
+        cantoneseWords: bilingualData.cantoneseWords, // Array of {char, pinyin}
+        userLevel: userLevel, // Return the user's level for reference
+
+        // Legacy format for backward compatibility
+        text: bilingualData.combinedText,
+
         audioUrl: audioUrl,
         audioFormat: 'mp3',
-        type: 'story', // New identifier for story format
+        type: 'story',
       },
     });
 
@@ -668,10 +1433,10 @@ app.post('/api/evaluate', upload.single('audio'), async (req, res) => {
     const { text: userText, confidence } = await recognizeCantoneseSpeech(req.file.buffer);
     console.log('Recognized text:', userText, 'Confidence:', confidence);
 
-    // Step 2: Calculate pronunciation score
+    // Step 2: Calculate pronunciation score with encouragement
     const scoreData = calculatePronunciationScore(originalText, userText, confidence);
 
-    // Return success response
+    // Return success response with enhanced data
     res.json({
       success: true,
       data: {
@@ -680,8 +1445,10 @@ app.post('/api/evaluate', upload.single('audio'), async (req, res) => {
         score: scoreData.score,
         accuracy: scoreData.accuracy,
         fluency: scoreData.fluency,
+        toneAccuracy: scoreData.toneAccuracy,
         similarity: scoreData.similarity,
-        confidence: Math.round(confidence * 100),
+        confidence: scoreData.confidence,
+        encouragement: scoreData.encouragement,
       },
     });
 
@@ -690,6 +1457,543 @@ app.post('/api/evaluate', upload.single('audio'), async (req, res) => {
     res.status(500).json({
       success: false,
       error: error.message || 'Failed to evaluate pronunciation',
+    });
+  }
+});
+
+/**
+ * POST /api/save
+ * Save a learning record to user's history
+ */
+app.post('/api/save', async (req, res) => {
+  try {
+    const { userId, mandarin, cantonese, cantoneseWords, audioUrl, imageUrl } = req.body;
+
+    // Validate required fields
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing userId in request body',
+      });
+    }
+
+    if (!mandarin || !cantonese) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing mandarin or cantonese text in request body',
+      });
+    }
+
+    // Save record
+    const record = saveRecord(userId, {
+      mandarin,
+      cantonese,
+      cantoneseWords: cantoneseWords || [],
+      audioUrl,
+      imageUrl,
+    });
+
+    res.json({
+      success: true,
+      data: {
+        id: record.id,
+        timestamp: record.timestamp,
+        message: 'Record saved successfully',
+      },
+    });
+
+  } catch (error) {
+    console.error('Save endpoint error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to save record',
+    });
+  }
+});
+
+/**
+ * GET /api/history
+ * Get user's learning history
+ */
+app.get('/api/history', (req, res) => {
+  try {
+    const { userId, limit } = req.query;
+
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing userId parameter',
+      });
+    }
+
+    const records = getUserHistory(userId, limit ? parseInt(limit) : 20);
+
+    res.json({
+      success: true,
+      data: {
+        count: records.length,
+        records: records,
+      },
+    });
+
+  } catch (error) {
+    console.error('History endpoint error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to fetch history',
+    });
+  }
+});
+
+/**
+ * DELETE /api/history/:id
+ * Delete a specific record from user's history
+ */
+app.delete('/api/history/:id', (req, res) => {
+  try {
+    const { userId } = req.query;
+    const { id } = req.params;
+
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing userId parameter',
+      });
+    }
+
+    const success = deleteRecord(userId, id);
+
+    if (!success) {
+      return res.status(404).json({
+        success: false,
+        error: 'Record not found or does not belong to user',
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        message: 'Record deleted successfully',
+      },
+    });
+
+  } catch (error) {
+    console.error('Delete history endpoint error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to delete record',
+    });
+  }
+});
+
+/**
+ * POST /api/share
+ * Create a shareable link for a story
+ */
+app.post('/api/share', async (req, res) => {
+  try {
+    const { mandarin, cantonese, cantoneseWords, imageUrl } = req.body;
+
+    // Validate required fields
+    if (!mandarin || !cantonese) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing mandarin or cantonese text in request body',
+      });
+    }
+
+    // Create share record
+    const shareRecord = createShareRecord({
+      mandarin,
+      cantonese,
+      cantoneseWords: cantoneseWords || [],
+      imageUrl,
+    });
+
+    // Generate share URL (assuming the app is hosted at the same domain)
+    const shareUrl = `${req.protocol}://${req.get('host')}/share/${shareRecord.shareId}`;
+
+    res.json({
+      success: true,
+      data: {
+        shareId: shareRecord.shareId,
+        shareUrl: shareUrl,
+        expiresAt: shareRecord.expiresAt,
+        message: 'Share link created successfully',
+      },
+    });
+
+  } catch (error) {
+    console.error('Share endpoint error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to create share link',
+    });
+  }
+});
+
+/**
+ * GET /api/share/:id
+ * Get shared story by share ID
+ */
+app.get('/api/share/:id', (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const shareRecord = getShareRecord(id);
+
+    if (!shareRecord) {
+      return res.status(404).json({
+        success: false,
+        error: 'Share link not found or has expired',
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        mandarin: shareRecord.mandarin,
+        cantonese: shareRecord.cantonese,
+        cantoneseWords: shareRecord.cantoneseWords,
+        imageUrl: shareRecord.imageUrl,
+        createdAt: shareRecord.createdAt,
+        expiresAt: shareRecord.expiresAt,
+      },
+    });
+
+  } catch (error) {
+    console.error('Get share endpoint error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to fetch shared story',
+    });
+  }
+});
+
+/**
+ * GET /api/library
+ * Get user's story library (saved stories)
+ */
+app.get('/api/library', (req, res) => {
+  try {
+    const { userId } = req.query;
+
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing userId parameter',
+      });
+    }
+
+    const records = getUserHistory(userId, 50); // Get up to 50 stories
+
+    // Group by date for better UI display
+    const grouped = {};
+    records.forEach(record => {
+      const date = new Date(record.timestamp).toLocaleDateString('zh-CN');
+      if (!grouped[date]) {
+        grouped[date] = [];
+      }
+      grouped[date].push(record);
+    });
+
+    res.json({
+      success: true,
+      data: {
+        total: records.length,
+        grouped: Object.entries(grouped).map(([date, stories]) => ({
+          date,
+          stories: stories.map(s => ({
+            id: s.id,
+            timestamp: s.timestamp,
+            mandarin: s.mandarin,
+            cantonese: s.cantonese,
+            cantoneseWords: s.cantoneseWords,
+            imageUrl: s.imageUrl,
+            hasAudio: !!s.audioUrl
+          }))
+        })),
+        recent: records.slice(0, 10).map(s => ({
+          id: s.id,
+          timestamp: s.timestamp,
+          mandarin: s.mandarin,
+          cantonese: s.cantonese,
+          cantoneseWords: s.cantoneseWords,
+          imageUrl: s.imageUrl
+        }))
+      },
+    });
+
+  } catch (error) {
+    console.error('Library endpoint error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to fetch library',
+    });
+  }
+});
+
+/**
+ * GET /api/achievements
+ * Get user's achievements
+ */
+app.get('/api/achievements', (req, res) => {
+  try {
+    const { userId } = req.query;
+
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing userId parameter',
+      });
+    }
+
+    const achievements = getUserAchievements(userId);
+    const stats = getUserStats(userId);
+
+    const unlockedCount = achievements.filter(a => a.unlocked).length;
+    const totalCount = achievements.length;
+
+    res.json({
+      success: true,
+      data: {
+        total: totalCount,
+        unlocked: unlockedCount,
+        progress: Math.round((unlockedCount / totalCount) * 100),
+        achievements: achievements,
+        nextAchievements: achievements.filter(a => !a.unlocked).slice(0, 3)
+      },
+    });
+
+  } catch (error) {
+    console.error('Achievements endpoint error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to fetch achievements',
+    });
+  }
+});
+
+/**
+ * GET /api/user/profile
+ * Get user profile including Cantonese level
+ */
+app.get('/api/user/profile', async (req, res) => {
+  try {
+    const { userId } = req.query;
+
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing userId parameter',
+      });
+    }
+
+    const profile = await getUserProfile(userId);
+
+    res.json({
+      success: true,
+      data: {
+        userId: profile.user_id || profile.userId,
+        cantoneseLevel: profile.cantonese_level || profile.cantoneseLevel,
+        preferences: profile.preferences,
+        createdAt: profile.created_at || profile.createdAt,
+        updatedAt: profile.updated_at || profile.updatedAt,
+      },
+    });
+
+  } catch (error) {
+    console.error('Get user profile endpoint error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to fetch user profile',
+    });
+  }
+});
+
+/**
+ * PUT /api/user/profile
+ * Update user profile (Cantonese level and preferences)
+ */
+app.put('/api/user/profile', async (req, res) => {
+  try {
+    const { userId, cantoneseLevel, preferences } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing userId in request body',
+      });
+    }
+
+    if (cantoneseLevel && !CANTONESE_LEVELS[cantoneseLevel.toUpperCase()]) {
+      return res.status(400).json({
+        success: false,
+        error: `Invalid cantoneseLevel. Must be one of: ${Object.keys(CANTONESE_LEVELS).join(', ')}`,
+      });
+    }
+
+    // Update Cantonese level if provided
+    let updatedProfile;
+    if (cantoneseLevel) {
+      updatedProfile = await updateUserCantoneseLevel(userId, cantoneseLevel);
+    }
+
+    res.json({
+      success: true,
+      data: {
+        userId: updatedProfile.user_id || updatedProfile.userId,
+        cantoneseLevel: updatedProfile.cantonese_level || updatedProfile.cantoneseLevel,
+        preferences: updatedProfile.preferences,
+        message: `粤语水平已更新为：${CANTONESE_LEVELS[cantoneseLevel.toUpperCase()].name}`,
+      },
+    });
+
+  } catch (error) {
+    console.error('Update user profile endpoint error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to update user profile',
+    });
+  }
+});
+
+/**
+ * GET /api/user/levels
+ * Get all available Cantonese levels
+ */
+app.get('/api/user/levels', (req, res) => {
+  try {
+    const levels = Object.values(CANTONESE_LEVELS).map(level => ({
+      id: level.id,
+      name: level.name,
+      nameEn: level.nameEn,
+      description: level.description,
+      storyLength: level.storyLength,
+      vocabulary: level.vocabulary,
+      difficulty: level.difficulty,
+    }));
+
+    res.json({
+      success: true,
+      data: levels,
+    });
+
+  } catch (error) {
+    console.error('Get levels endpoint error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to fetch levels',
+    });
+  }
+});
+
+/**
+ * GET /api/user/stats
+ * Get user's learning statistics
+ */
+app.get('/api/user/stats', (req, res) => {
+  try {
+    const { userId } = req.query;
+
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing userId parameter',
+      });
+    }
+
+    const stats = getUserStats(userId);
+    const achievements = getUserAchievements(userId);
+    const records = getUserHistory(userId, 100);
+
+    // Calculate additional statistics
+    const averageScore = stats.practiceCount > 0
+      ? Math.round(stats.totalScore / stats.practiceCount)
+      : 0;
+
+    const thisWeek = records.filter(r => {
+      const recordDate = new Date(r.timestamp);
+      const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      return recordDate >= weekAgo;
+    }).length;
+
+    const today = records.filter(r => {
+      const recordDate = new Date(r.timestamp);
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      return recordDate >= todayStart;
+    }).length;
+
+    res.json({
+      success: true,
+      data: {
+        totalStories: stats.totalStories,
+        practiceCount: stats.practiceCount,
+        bestScore: stats.bestScore,
+        averageScore: averageScore,
+        totalStudyTime: stats.totalStudyTime,
+        achievementsUnlocked: achievements.filter(a => a.unlocked).length,
+        thisWeekCount: thisWeek,
+        todayCount: today,
+        level: Math.floor(stats.totalStories / 10) + 1, // Simple leveling system
+        currentLevelProgress: stats.totalStories % 10,
+        nextLevelStories: ((Math.floor(stats.totalStories / 10) + 1) * 10),
+      },
+    });
+
+  } catch (error) {
+    console.error('User stats endpoint error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to fetch user stats',
+    });
+  }
+});
+
+/**
+ * POST /api/user/stats
+ * Update user statistics (call after completing a story or practice)
+ */
+app.post('/api/user/stats', async (req, res) => {
+  try {
+    const { userId, score, practiceTime, isPractice } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing userId in request body',
+      });
+    }
+
+    const updatedStats = updateUserStats(userId, {
+      score,
+      practiceTime: practiceTime || 1, // default 1 minute
+      isPractice: isPractice || false
+    });
+
+    // Get updated achievements
+    const achievements = getUserAchievements(userId);
+    const newAchievements = achievements.filter(a =>
+      a.unlocked && new Date(a.unlockedAt) > new Date(updatedStats.lastUpdated)
+    );
+
+    res.json({
+      success: true,
+      data: {
+        stats: updatedStats,
+        newAchievements: newAchievements,
+        message: newAchievements.length > 0
+          ? `🎉 恭喜解锁 ${newAchievements.length} 个新成就！`
+          : 'Statistics updated successfully'
+      },
+    });
+
+  } catch (error) {
+    console.error('Update user stats endpoint error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to update user stats',
     });
   }
 });
@@ -723,23 +2027,57 @@ app.use((error, req, res, next) => {
 
 // ============== START SERVER ==============
 app.listen(PORT, () => {
+  const storageType = pool ? 'PostgreSQL Database' : 'In-Memory Storage';
+
   console.log(`
 ╔════════════════════════════════════════════════════════════╗
 ║          🎤 拍照学粤语 API Server Started 🎤             ║
 ╠════════════════════════════════════════════════════════════╣
 ║  Server running on: http://localhost:${PORT}                  ║
+║                                                         ║
+║  Core APIs:                                             ║
 ║  Health check:    GET  /health                             ║
-║  Generate:        POST /api/generate                       ║
+║  Generate:        POST /api/generate (支持用户水平调整)   ║
 ║  Evaluate:        POST /api/evaluate                       ║
+║                                                         ║
+║  Save & Library:                                         ║
+║  Save:            POST /api/save                           ║
+║  History:         GET  /api/history                        ║
+║  Library:         GET  /api/library                        ║
+║  Delete:          DELETE /api/history/:id                  ║
+║                                                         ║
+║  Share & Social:                                         ║
+║  Share:           POST /api/share                          ║
+║  Get Share:       GET  /api/share/:id                      ║
+║                                                         ║
+║  User & Gamification:                                    ║
+║  Profile:         GET  /api/user/profile                   ║
+║  Update Profile:  PUT  /api/user/profile                  ║
+║  Get Levels:     GET  /api/user/levels                    ║
+║  User Stats:      GET  /api/user/stats                     ║
+║  Update Stats:    POST /api/user/stats                    ║
+║  Achievements:    GET  /api/achievements                   ║
 ╚════════════════════════════════════════════════════════════╝
 
 ✅ APIs configured:
-   - DeepInfra Vision (Qwen2.5-VL-32B-Instruct) - 图像识别
+   - DeepInfra Vision (Qwen2.5-VL-32B-Instruct) - 图像识别与文本生成
+   - DeepInfra API (Cantonese Translation + Jyutping) - 粤语翻译与拼音
    - Tencent Cloud TTS (粤语) - 语音合成
    - DeepInfra Whisper (whisper-large-v3) - 语音识别
+   - ${storageType} - 存储系统
+   - Achievement System (6 成就) - 成就系统
+
+🆕 Features:
+   - Automatic Jyutping romanization for Cantonese text
+   - Structured bilingual output with pinyin annotations
+   - Intelligent voice selection (Male/Female)
+   - Enhanced scoring with tone accuracy & encouragement
+   - User statistics & leveling system
+   - Achievement tracking & unlocking
+   - Adaptive difficulty based on user's Cantonese level (初级/中级/高级)
 
 ⚠️  Make sure all required environment variables are set!
-`);
+${!pool ? '⚠️  No DATABASE_URL found - using in-memory storage (data will be lost on restart)\n' : ''}`);
 });
 
 module.exports = app;
